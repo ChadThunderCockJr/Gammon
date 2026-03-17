@@ -149,8 +149,8 @@ export default function GameScreen() {
         </View>
       )}
       {error && (
-        <View style={[styles.banner, { backgroundColor: "rgba(244,67,54,0.2)" }]}>
-          <Text style={styles.bannerText}>{error}</Text>
+        <View style={[styles.banner, { backgroundColor: "rgba(204, 68, 68, 0.15)" }]}>
+          <Text style={[styles.bannerText, { color: Colors.red }]}>{error}</Text>
         </View>
       )}
 
@@ -233,7 +233,7 @@ export default function GameScreen() {
             <View style={styles.rollRow}>
               {canDouble && (
                 <TouchableOpacity
-                  style={[styles.actionButton, { backgroundColor: Colors.surfaceLight }]}
+                  style={[styles.actionButton, { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border }]}
                   onPress={offerDouble}
                 >
                   <Text style={styles.actionButtonText}>Double</Text>
@@ -252,7 +252,7 @@ export default function GameScreen() {
             <View style={styles.moveActions}>
               {canUndo && (
                 <TouchableOpacity
-                  style={[styles.actionButton, { backgroundColor: Colors.surfaceLight }]}
+                  style={[styles.actionButton, { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border }]}
                   onPress={undoMove}
                 >
                   <Text style={styles.actionButtonText}>Undo</Text>
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#555",
+    borderColor: Colors.border,
   },
   playerLabel: {
     fontSize: 14,
@@ -362,14 +362,14 @@ const styles = StyleSheet.create({
     maxWidth: 120,
   },
   banner: {
-    backgroundColor: "rgba(255,193,7,0.2)",
+    backgroundColor: "rgba(136, 32, 64, 0.15)",
     borderRadius: 8,
     padding: 8,
     marginHorizontal: 8,
     marginBottom: 4,
   },
   bannerText: {
-    color: Colors.gold,
+    color: Colors.burgundy,
     fontSize: 13,
     textAlign: "center",
   },
@@ -422,7 +422,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
     borderWidth: 1,
-    borderColor: Colors.surfaceLight,
+    borderColor: Colors.border,
   },
   doubleText: {
     fontSize: 16,
@@ -447,7 +447,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   actionButton: {
-    borderRadius: 12,
+    borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 20,
     alignItems: "center",
@@ -464,7 +464,6 @@ const styles = StyleSheet.create({
   resignText: {
     color: Colors.textMuted,
     fontSize: 13,
-    textDecorationLine: "underline",
   },
   gameOverBox: {
     backgroundColor: Colors.surface,
@@ -474,7 +473,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: Colors.surfaceLight,
+    borderColor: Colors.border,
   },
   gameOverTitle: {
     fontSize: 24,
@@ -487,9 +486,9 @@ const styles = StyleSheet.create({
   },
   homeButton: {
     backgroundColor: Colors.accent,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+    borderRadius: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     marginTop: 8,
   },
   homeButtonText: {

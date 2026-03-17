@@ -29,18 +29,18 @@ const QUAD_W = 6 * POINT_W + 5 * POINT_GAP;
 const BOARD_W = BORDER * 2 + QUAD_W * 2 + BAR_W + BEAROFF_W;
 const BOARD_H = BORDER * 2 + POINT_H * 2 + CENTER_H;
 
-// Colors
-const WOOD_BORDER = "#5c3a1e";
-const FELT_DARK = "#1b3d0a";
-const FELT_LIGHT = "#2d5016";
-const POINT_DARK = "#8B4513";
-const POINT_LIGHT = "#D2B48C";
-const CHECKER_WHITE = "#f0d9b5";
-const CHECKER_WHITE_STROKE = "#c9a86c";
-const CHECKER_BLACK = "#4a3728";
-const CHECKER_BLACK_STROKE = "#2a1f14";
-const HIGHLIGHT_COLOR = "rgba(76, 175, 80, 0.5)";
-const SELECTED_COLOR = "rgba(255, 215, 0, 0.6)";
+// Colors – mapped from web CSS variables via Colors constants
+const WOOD_BORDER = Colors.boardBar;           // #2A2118
+const FELT_DARK = Colors.feltDark;             // #2D5A28
+const FELT_LIGHT = Colors.feltLight;           // #3A6B35
+const POINT_DARK = Colors.pointDark;           // #A0522D (sienna)
+const POINT_LIGHT = Colors.pointLight;         // #E8C78A (tan/wheat)
+const CHECKER_WHITE = Colors.white;            // #DCD8D0
+const CHECKER_WHITE_STROKE = Colors.whiteBorder; // #A8A098
+const CHECKER_BLACK = Colors.black;            // #8A2040 (burgundy)
+const CHECKER_BLACK_STROKE = Colors.blackBorder; // #A04060
+const HIGHLIGHT_COLOR = Colors.boardHighlight; // rgba(88, 20, 40, 0.25) burgundy tint
+const SELECTED_COLOR = "rgba(88, 20, 40, 0.4)"; // burgundy selected source
 
 export interface BoardProps {
   board: BoardState;
@@ -261,7 +261,7 @@ export default function Board({
                     cx={x + POINT_W / 2}
                     cy={isTop ? BORDER + 12 : BOARD_H - BORDER - 12}
                     r={4}
-                    fill={Colors.gold}
+                    fill={Colors.accent}
                     opacity={0.7}
                   />
                 )}
@@ -270,7 +270,7 @@ export default function Board({
                 x={x + POINT_W / 2}
                 y={isTop ? BORDER - 1 : BOARD_H - BORDER + 10}
                 fontSize={8}
-                fill="#999"
+                fill={Colors.textMuted}
                 textAnchor="middle"
               >
                 {boardPt}
@@ -285,7 +285,7 @@ export default function Board({
           y={BORDER}
           width={BAR_W}
           height={BOARD_H - BORDER * 2}
-          fill="#3a2a1a"
+          fill={Colors.boardBar}
           onPress={handleBarPress}
         />
 
@@ -295,7 +295,7 @@ export default function Board({
           y={0}
           width={BEAROFF_W}
           height={BOARD_H}
-          fill="#2a1f14"
+          fill={Colors.boardBar}
           rx={4}
           onPress={handleBearoffPress}
         />
@@ -304,7 +304,7 @@ export default function Board({
           x={BOARD_W - BEAROFF_W / 2}
           y={BOARD_H / 2}
           fontSize={9}
-          fill="#666"
+          fill={Colors.textMuted}
           textAnchor="middle"
           rotation={-90}
           originX={BOARD_W - BEAROFF_W / 2}
@@ -352,7 +352,7 @@ export default function Board({
                     y={cy + 4}
                     fontSize={12}
                     fontWeight="bold"
-                    fill={color === "white" ? "#333" : "#eee"}
+                    fill={color === "white" ? Colors.boardBar : Colors.text}
                     textAnchor="middle"
                   >
                     {absCount}
@@ -397,7 +397,7 @@ export default function Board({
             }
             fontSize={11}
             fontWeight="bold"
-            fill="#333"
+            fill={Colors.boardBar}
             textAnchor="middle"
           >
             {board.points[WHITE_BAR]}
@@ -486,7 +486,7 @@ export default function Board({
               cx={x}
               cy={isTop ? BORDER + 10 : BOARD_H - BORDER - 10}
               r={6}
-              fill="rgba(233, 69, 96, 0.7)"
+              fill="rgba(136, 32, 64, 0.5)"
             />
           );
         })()}
@@ -497,7 +497,7 @@ export default function Board({
           y1={BOARD_H / 2}
           x2={BORDER + QUAD_W}
           y2={BOARD_H / 2}
-          stroke="#2a4a12"
+          stroke={Colors.feltLight}
           strokeWidth={1}
         />
         <Line
@@ -505,7 +505,7 @@ export default function Board({
           y1={BOARD_H / 2}
           x2={BOARD_W - BEAROFF_W}
           y2={BOARD_H / 2}
-          stroke="#2a4a12"
+          stroke={Colors.feltLight}
           strokeWidth={1}
         />
       </Svg>

@@ -121,7 +121,7 @@ export default function VerifyRollsScreen() {
         <TextInput
           style={styles.input}
           placeholder="Game ID"
-          placeholderTextColor="#555"
+          placeholderTextColor={Colors.textMuted}
           value={gameId}
           onChangeText={setGameId}
           autoCapitalize="none"
@@ -135,7 +135,7 @@ export default function VerifyRollsScreen() {
           disabled={!gameId.trim() || loading}
         >
           {loading ? (
-            <ActivityIndicator color="#fff" size="small" />
+            <ActivityIndicator color={Colors.accentFg} size="small" />
           ) : (
             <Text style={styles.fetchButtonText}>Fetch</Text>
           )}
@@ -182,7 +182,7 @@ export default function VerifyRollsScreen() {
           >
             {verifyingAll ? (
               <View style={styles.verifyingRow}>
-                <ActivityIndicator color="#fff" size="small" />
+                <ActivityIndicator color={Colors.text} size="small" />
                 <Text style={styles.verifyAllText}>Verifying...</Text>
               </View>
             ) : (
@@ -267,8 +267,8 @@ function StatusBadge({ status }: { status: VerifyStatus }) {
         {
           backgroundColor:
             status === "valid"
-              ? "rgba(76,175,80,0.2)"
-              : "rgba(244,67,54,0.2)",
+              ? "rgba(96, 168, 96, 0.12)"
+              : "rgba(204, 68, 68, 0.12)",
         },
       ]}
     >
@@ -286,7 +286,7 @@ function StatusBadge({ status }: { status: VerifyStatus }) {
 
 const statusStyles = StyleSheet.create({
   badge: {
-    borderRadius: 6,
+    borderRadius: 20,
     paddingHorizontal: 8,
     paddingVertical: 2,
   },
@@ -326,22 +326,22 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     backgroundColor: Colors.surface,
-    borderRadius: 12,
+    borderRadius: 6,
     paddingHorizontal: 16,
     paddingVertical: 12,
     fontSize: 16,
     color: Colors.text,
-    borderWidth: 1,
-    borderColor: Colors.surfaceLight,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
   },
   fetchButton: {
     backgroundColor: Colors.accent,
-    borderRadius: 12,
+    borderRadius: 6,
     paddingHorizontal: 20,
     justifyContent: "center",
   },
   fetchButtonText: {
-    color: "#fff",
+    color: Colors.accentFg,
     fontSize: 16,
     fontWeight: "600",
   },
@@ -349,7 +349,7 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   errorBox: {
-    backgroundColor: "rgba(244, 67, 54, 0.15)",
+    backgroundColor: "rgba(204, 68, 68, 0.12)",
     borderRadius: 8,
     padding: 12,
   },
@@ -359,23 +359,32 @@ const styles = StyleSheet.create({
   },
   metaBox: {
     backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 8,
+    padding: 12,
     gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   metaLabel: {
-    fontSize: 13,
+    fontSize: 11,
+    fontWeight: "600",
     color: Colors.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.1 * 11,
   },
   metaMono: {
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     color: Colors.text,
+    textTransform: "none",
+    letterSpacing: 0,
   },
   verifyAllButton: {
-    backgroundColor: Colors.surfaceLight,
-    borderRadius: 12,
+    backgroundColor: Colors.surface,
+    borderRadius: 6,
     paddingVertical: 14,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   verifyAllText: {
     color: Colors.text,
@@ -389,11 +398,11 @@ const styles = StyleSheet.create({
   },
   rollCard: {
     backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 8,
+    padding: 12,
     gap: 6,
     borderWidth: 1,
-    borderColor: Colors.surfaceLight,
+    borderColor: Colors.border,
   },
   rollHeader: {
     flexDirection: "row",
@@ -411,6 +420,7 @@ const styles = StyleSheet.create({
   },
   dieText: {
     fontSize: 20,
+    color: Colors.text,
   },
   roundLink: {
     fontSize: 12,
@@ -419,15 +429,17 @@ const styles = StyleSheet.create({
   },
   detailText: {
     fontSize: 11,
-    color: Colors.green,
+    color: Colors.textMuted,
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
   explainBox: {
     backgroundColor: Colors.surface,
-    borderRadius: 16,
+    borderRadius: 8,
     padding: 20,
     gap: 12,
     marginTop: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   explainTitle: {
     fontSize: 18,
