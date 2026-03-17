@@ -456,7 +456,9 @@ export default function LoginPage() {
             }}
           >
             By continuing, you agree to the{" "}
-            <span
+            <a
+              href="/terms"
+              target="_blank"
               style={{
                 color: "var(--color-text-muted)",
                 textDecoration: "underline",
@@ -464,9 +466,11 @@ export default function LoginPage() {
               }}
             >
               Terms of Service
-            </span>{" "}
+            </a>{" "}
             and{" "}
-            <span
+            <a
+              href="/privacy"
+              target="_blank"
               style={{
                 color: "var(--color-text-muted)",
                 textDecoration: "underline",
@@ -474,7 +478,7 @@ export default function LoginPage() {
               }}
             >
               Privacy Policy
-            </span>
+            </a>
           </p>
         </div>
 
