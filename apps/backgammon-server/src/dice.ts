@@ -1,111 +1,74 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+import type { DrandBeacon } from "./drand.js";
 
-export interface DiceCommit {
-  serverSeed: string;
-  commitHash: string;
-  clientSeed: string;
+// ── Types ─────────────────────────────────────────────────────────
+
+export interface DrandDiceProof {
+  drandRound: number;
+  drandRandomness: string;  // 32 bytes hex
+  drandSignature: string;   // BLS signature hex
+  playerWhite: string;
+  playerBlack: string;
   turnNumber: number;
-  dice: [number, number] | null; // null until revealed
+  dice: [number, number];
 }
 
-/** Generate a server seed and its commitment hash */
-export function createCommit(turnNumber: number): { serverSeed: string; commitHash: string } {
-  const serverSeed = randomBytes(32).toString("hex");
-  // Commit is hash of serverSeed alone — clientSeed not yet known
-  const commitHash = createHash("sha256")
-    .update(serverSeed)
-    .digest("hex");
-  return { serverSeed, commitHash };
-}
+// ── Dice derivation ───────────────────────────────────────────────
 
-/** Derive deterministic dice from combined seeds */
-export function deriveDice(serverSeed: string, clientSeed: string, turnNumber: number): [number, number] {
+/** Derive deterministic dice from drand randomness + game context */
+export function deriveDice(
+  drandRandomness: string,
+  playerWhite: string,
+  playerBlack: string,
+  turnNumber: number,
+): [number, number] {
   const combined = createHash("sha256")
-    .update(serverSeed + clientSeed + String(turnNumber))
+    .update(drandRandomness + playerWhite + playerBlack + String(turnNumber))
     .digest();
 
-  // Use first 2 bytes to derive dice values (1-6)
   const die1 = (combined[0] % 6) + 1;
   const die2 = (combined[1] % 6) + 1;
   return [die1, die2];
 }
 
-/** Verify that dice were derived correctly from the seeds */
-export function verifyDice(
-  commitHash: string,
-  serverSeed: string,
-  clientSeed: string,
+/** Create a full dice proof from a drand beacon */
+export function createDiceProof(
+  beacon: DrandBeacon,
+  playerWhite: string,
+  playerBlack: string,
   turnNumber: number,
-  dice: [number, number],
-): boolean {
-  // 1. Verify the commit hash matches the server seed
-  const expectedHash = createHash("sha256")
-    .update(serverSeed)
-    .digest("hex");
-  if (expectedHash !== commitHash) return false;
-
-  // 2. Verify the dice were derived correctly
-  const expectedDice = deriveDice(serverSeed, clientSeed, turnNumber);
-  return expectedDice[0] === dice[0] && expectedDice[1] === dice[1];
+): DrandDiceProof {
+  const dice = deriveDice(beacon.randomness, playerWhite, playerBlack, turnNumber);
+  return {
+    drandRound: beacon.round,
+    drandRandomness: beacon.randomness,
+    drandSignature: beacon.signature,
+    playerWhite,
+    playerBlack,
+    turnNumber,
+    dice,
+  };
 }
 
-/** Stores commit history for a game */
+/** Verify that dice were correctly derived from drand randomness (does NOT verify BLS sig — that requires drand-client or @noble/curves) */
+export function verifyDiceDerivation(proof: DrandDiceProof): boolean {
+  const expected = deriveDice(proof.drandRandomness, proof.playerWhite, proof.playerBlack, proof.turnNumber);
+  return expected[0] === proof.dice[0] && expected[1] === proof.dice[1];
+}
+
+// ── Dice history (stores proofs per game) ─────────────────────────
+
 export class GameDiceHistory {
-  private commits: Map<number, DiceCommit> = new Map(); // turnNumber -> commit
+  private proofs: Map<number, DrandDiceProof> = new Map(); // turnNumber -> proof
 
-  /** Create a new commit for a turn */
-  createTurnCommit(turnNumber: number): { commitHash: string } {
-    const { serverSeed, commitHash } = createCommit(turnNumber);
-    this.commits.set(turnNumber, {
-      serverSeed,
-      commitHash,
-      clientSeed: "",
-      turnNumber,
-      dice: null,
-    });
-    return { commitHash };
+  /** Store a dice proof for a turn */
+  addProof(proof: DrandDiceProof): void {
+    this.proofs.set(proof.turnNumber, proof);
   }
 
-  /** Reveal dice for a turn given the client seed */
-  revealDice(turnNumber: number, clientSeed: string): { dice: [number, number]; serverSeed: string; commitHash: string } | null {
-    const commit = this.commits.get(turnNumber);
-    if (!commit) return null;
-    if (commit.dice !== null) return null; // already revealed
-
-    const dice = deriveDice(commit.serverSeed, clientSeed, turnNumber);
-    commit.clientSeed = clientSeed;
-    commit.dice = dice;
-    return { dice, serverSeed: commit.serverSeed, commitHash: commit.commitHash };
-  }
-
-  /** Get full history for verification (all revealed turns) */
-  getHistory(): Array<{
-    turnNumber: number;
-    serverSeed: string;
-    clientSeed: string;
-    commitHash: string;
-    dice: [number, number];
-  }> {
-    const result: Array<{
-      turnNumber: number;
-      serverSeed: string;
-      clientSeed: string;
-      commitHash: string;
-      dice: [number, number];
-    }> = [];
-
-    for (const [, commit] of this.commits) {
-      if (commit.dice) {
-        result.push({
-          turnNumber: commit.turnNumber,
-          serverSeed: commit.serverSeed,
-          clientSeed: commit.clientSeed,
-          commitHash: commit.commitHash,
-          dice: commit.dice,
-        });
-      }
-    }
-
-    return result.sort((a, b) => a.turnNumber - b.turnNumber);
+  /** Get full history for verification (all turns) */
+  getHistory(): DrandDiceProof[] {
+    return Array.from(this.proofs.values())
+      .sort((a, b) => a.turnNumber - b.turnNumber);
   }
 }

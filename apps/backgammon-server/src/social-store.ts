@@ -730,3 +730,39 @@ export async function getGameHistory(gameId: string): Promise<MoveRecord[] | nul
     return JSON.parse(data) as MoveRecord[];
   } catch { return null; }
 }
+
+// ── Dice Proofs (drand) ────────────────────────────────────────────
+
+export interface StoredDiceProofs {
+  gameId: string;
+  drandChain: string;
+  playerWhite: string;
+  playerBlack: string;
+  rolls: Array<{
+    drandRound: number;
+    drandRandomness: string;
+    drandSignature: string;
+    playerWhite: string;
+    playerBlack: string;
+    turnNumber: number;
+    dice: [number, number];
+  }>;
+}
+
+export async function saveDiceProofs(gameId: string, proofs: StoredDiceProofs): Promise<void> {
+  try {
+    const r = getRedis();
+    if (!r) return;
+    await r.setex(`dice_proofs:${gameId}`, GAME_HISTORY_TTL, JSON.stringify(proofs));
+  } catch { /* ignore */ }
+}
+
+export async function getDiceProofs(gameId: string): Promise<StoredDiceProofs | null> {
+  try {
+    const r = getRedis();
+    if (!r) return null;
+    const data = await r.get(`dice_proofs:${gameId}`);
+    if (!data) return null;
+    return JSON.parse(data) as StoredDiceProofs;
+  } catch { return null; }
+}

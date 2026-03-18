@@ -26,6 +26,10 @@ expo-env.d.ts
 # Mobile native builds (generated)
 apps/data-passport-mobile/android/
 apps/data-passport-mobile/ios/
+apps/backgammon-ios/android/
+apps/backgammon-ios/ios/
+apps/passport-ios/android/
+apps/passport-ios/ios/
 
 # Testing
 coverage/

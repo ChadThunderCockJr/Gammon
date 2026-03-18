@@ -19,6 +19,7 @@
     "@xion-beginner/backgammon-core": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
+    "drand-client": "^1.4.2",
     "express": "^4.21.0",
     "ioredis": "^5.4.0",
     "uuid": "^11.0.0",

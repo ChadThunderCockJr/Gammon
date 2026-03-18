@@ -16,8 +16,8 @@ config.resolver.nodeModulesPaths = [
   path.resolve(monorepoRoot, "node_modules"),
 ];
 
-// The monorepo root has React 18, but this app needs React 19.
-// Force ALL "react" imports to use the app-local React 19 copy.
+// Force "react" imports to resolve to the app-local React 19 copy,
+// not the root monorepo React 18.
 const appReactPath = path.resolve(projectRoot, "node_modules/react");
 
 const originalResolveRequest = config.resolver.resolveRequest;

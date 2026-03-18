@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
-import { GameDiceHistory } from "./dice.js";
+import { GameDiceHistory, createDiceProof, type DrandDiceProof } from "./dice.js";
+import { latestBeacon } from "./drand.js";
 import { DEFAULT_TURN_TIME_LIMIT_SEC, DOUBLE_DEPOSIT_TIMEOUT_MS, STALLING_MIN_MOVES, STALLING_THRESHOLD_PCTG, DISCONNECT_GRACE_SEC, DISCONNECT_GRACE_DOUBLE_SEC, DISCONNECT_CHECK_INTERVAL_MS } from "./config.js";
 import {
   createGameState,
@@ -191,11 +192,11 @@ export class GameManager {
     return null;
   }
 
-  async rollDiceLocked(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[] } | null> {
+  async rollDiceLocked(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string } } | null> {
     return this.withGameLock(gameId, () => this.rollDice(gameId, playerAddress));
   }
 
-  rollDice(gameId: string, playerAddress: string): { dice: [number, number]; gameState: GameState; legalMoves: Move[] } | null {
+  async rollDice(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string } } | null> {
     const game = this.games.get(gameId);
     if (!game || game.status !== "playing") return null;
     if (game.gameState.dice !== null) return null; // already rolled
@@ -206,25 +207,28 @@ export class GameManager {
 
     game.turnMoveStack = [];
 
-    // Commit-reveal dice: create commit, use player address as client seed
     const diceHistory = this.diceHistories.get(gameId);
     const turnNumber = game.gameState.turnNumber + 1; // setDice increments turnNumber
+    const whiteAddr = game.playerWhite?.address || "";
+    const blackAddr = game.playerBlack?.address || "";
+
     let die1: number;
     let die2: number;
+    let drandProof: { round: number; randomness: string; signature: string } | undefined;
 
-    if (diceHistory) {
-      const { commitHash } = diceHistory.createTurnCommit(turnNumber);
-      // Use player address as client seed for simplicity
-      // (full protocol would have player submit their own seed)
-      const revealed = diceHistory.revealDice(turnNumber, playerAddress);
-      if (revealed) {
-        die1 = revealed.dice[0];
-        die2 = revealed.dice[1];
-      } else {
-        die1 = randomInt(1, 7);
-        die2 = randomInt(1, 7);
+    try {
+      // Fetch latest drand beacon and derive dice
+      const beacon = await latestBeacon();
+      const proof = createDiceProof(beacon, whiteAddr, blackAddr, turnNumber);
+      die1 = proof.dice[0];
+      die2 = proof.dice[1];
+      drandProof = { round: proof.drandRound, randomness: proof.drandRandomness, signature: proof.drandSignature };
+
+      if (diceHistory) {
+        diceHistory.addProof(proof);
       }
-    } else {
+    } catch {
+      // Fallback to random if drand is unreachable
       die1 = randomInt(1, 7);
       die2 = randomInt(1, 7);
     }
@@ -242,7 +246,7 @@ export class GameManager {
 
     void this.persistGame(game);
 
-    return { dice: [die1, die2], gameState: game.gameState, legalMoves };
+    return { dice: [die1, die2], gameState: game.gameState, legalMoves, drandProof };
   }
 
   async applyMoveLocked(gameId: string, playerAddress: string, from: number, to: number): Promise<{ move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null> {
@@ -727,13 +731,7 @@ export class GameManager {
     return { warn: false, penalize: false };
   }
 
-  getDiceHistory(gameId: string): Array<{
-    turnNumber: number;
-    serverSeed: string;
-    clientSeed: string;
-    commitHash: string;
-    dice: [number, number];
-  }> {
+  getDiceHistory(gameId: string): DrandDiceProof[] {
     const history = this.diceHistories.get(gameId);
     return history ? history.getHistory() : [];
   }

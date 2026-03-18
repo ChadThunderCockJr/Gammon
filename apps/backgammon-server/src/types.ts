@@ -60,7 +60,6 @@ export type ClientMessage =
   | { type: "move"; game_id: string; from: number; to: number }
   | { type: "end_turn"; game_id: string }
   | { type: "roll_dice"; game_id: string }
-  | { type: "submit_client_seed"; game_id: string; client_seed: string }
   | { type: "undo_move"; game_id: string }
   | { type: "resign"; game_id: string; resign_type?: "normal" | "gammon" | "backgammon" }
   | { type: "accept_resign"; game_id: string }
@@ -96,7 +95,7 @@ export type ServerMessage =
   | { type: "game_start"; game_id: string; white: string; black: string; white_name?: string; black_name?: string; game_state: GameState; legal_moves?: Move[]; match_state?: MatchState; turn_time_limit?: number; needs_confirmation?: boolean }
   | { type: "queue_joined"; position: number }
   | { type: "queue_left" }
-  | { type: "dice_rolled"; game_id: string; dice: [number, number]; player: Player; game_state: GameState; legal_moves: Move[]; needs_confirmation?: boolean }
+  | { type: "dice_rolled"; game_id: string; dice: [number, number]; player: Player; game_state: GameState; legal_moves: Move[]; needs_confirmation?: boolean; drand_proof?: { round: number; randomness: string; signature: string } }
   | { type: "move_made"; game_id: string; move: Move; player: Player; game_state: GameState; legal_moves: Move[]; needs_confirmation?: boolean }
   | { type: "move_undone"; game_id: string; game_state: GameState; legal_moves: Move[] }
   | { type: "turn_ended"; game_id: string; next_player: Player; game_state: GameState }
@@ -109,8 +108,8 @@ export type ServerMessage =
   | { type: "disconnect_countdown"; game_id: string; seconds_remaining: number }
   | { type: "game_abandoned"; game_id: string; winner: string }
   | { type: "spectate_joined"; game_id: string; game_state: GameState }
-  | { type: "dice_commit"; game_id: string; commit_hash: string; turn_number: number }
-  | { type: "dice_revealed"; game_id: string; dice: [number, number]; server_seed: string; commit_hash: string; turn_number: number }
+  | { type: "dice_commit"; game_id: string; commit_hash: string; turn_number: number }  // deprecated (kept for backward compat)
+  | { type: "dice_revealed"; game_id: string; dice: [number, number]; server_seed: string; commit_hash: string; turn_number: number }  // deprecated (kept for backward compat)
   // Cube messages
   | { type: "double_offered"; game_id: string; player: Player; cube_value: number }
   | { type: "double_accepted"; game_id: string; cube_value: number; cube_owner: Player }

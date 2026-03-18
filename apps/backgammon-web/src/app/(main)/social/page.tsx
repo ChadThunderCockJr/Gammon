@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { Card, Avatar } from "@/components/ui";
 import { useSocialContext } from "@/contexts/SocialContext";
 import type { ChallengeConfig } from "@/hooks/useSocial";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 // ── Icons ──────────────────────────────────────────────────────
 
@@ -241,6 +242,7 @@ function ChallengeConfigPanel({
   onSend: (config: ChallengeConfig) => void;
   onCancel: () => void;
 }) {
+  const isNativeApp = useIsNativeApp();
   const [matchLength, setMatchLength] = useState(5);
   const [wagerAmount, setWagerAmount] = useState(0);
   const [doublingCube, setDoublingCube] = useState(true);
@@ -296,6 +298,7 @@ function ChallengeConfigPanel({
       </div>
 
       {/* Wager */}
+      {!isNativeApp && (
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)", minWidth: 50 }}>
           Wager
@@ -321,6 +324,7 @@ function ChallengeConfigPanel({
           />
         </div>
       </div>
+      )}
 
       {/* Doubling Cube */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

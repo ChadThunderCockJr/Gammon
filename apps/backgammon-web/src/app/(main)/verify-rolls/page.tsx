@@ -5,10 +5,11 @@ import { Header } from "@/components/layout";
 import { Card, SectionLabel, Avatar, Badge } from "@/components/ui";
 import { useAuth } from "@/hooks/useAuth";
 import { formatMove } from "@xion-beginner/backgammon-core";
-import type { MoveRecord, Player } from "@xion-beginner/backgammon-core";
+import type { MoveRecord } from "@xion-beginner/backgammon-core";
 import { API_BASE } from "@/lib/api";
 import type { MatchResult } from "@/lib/api";
 import { getLocalMatches, type AIMatchRecord } from "@/lib/local-stats";
+import { verifyDiceRoll, DRAND_CHAIN_HASH, type DiceProof, type DiceProofsResponse } from "@/lib/dice-verify";
 
 // ─── Icons ─────────────────────────────────────────────────────────
 
@@ -36,6 +37,33 @@ function ChevronIcon({ open }: { open: boolean }) {
       }}
     >
       <path d="M5 3l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="7" fill="#22c55e" opacity="0.15" />
+      <path d="M5 8l2 2 4-4" stroke="#22c55e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CrossIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="7" fill="#ef4444" opacity="0.15" />
+      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ animation: "spin 1s linear infinite" }}>
+      <circle cx="8" cy="8" r="6" stroke="var(--color-text-faint)" strokeWidth="1.5" strokeDasharray="20 12" />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </svg>
   );
 }
@@ -88,15 +116,69 @@ function DistributionBar({ face, count, total }: { face: number; count: number; 
   );
 }
 
-// ─── Roll Log Table ────────────────────────────────────────────────
+// ─── Verification Status ──────────────────────────────────────────
 
-function RollLog({ moveHistory }: { moveHistory: MoveRecord[] }) {
+type VerifyStatus = "pending" | "verifying" | "valid" | "invalid";
+
+function VerifyBadge({ status, details }: { status: VerifyStatus; details?: string }) {
+  if (status === "pending") return null;
+  if (status === "verifying") return <SpinnerIcon />;
+  return (
+    <span title={details} style={{ cursor: details ? "help" : undefined }}>
+      {status === "valid" ? <CheckIcon /> : <CrossIcon />}
+    </span>
+  );
+}
+
+// ─── Roll Log Table (with drand verification) ──────────────────────
+
+function RollLog({
+  moveHistory,
+  diceProofs,
+}: {
+  moveHistory: MoveRecord[];
+  diceProofs: DiceProof[] | null;
+}) {
+  const [verifyResults, setVerifyResults] = useState<Map<number, { status: VerifyStatus; details?: string }>>(new Map());
+  const [verifyingAll, setVerifyingAll] = useState(false);
+
+  const verifyOne = useCallback(async (proof: DiceProof) => {
+    setVerifyResults((prev) => {
+      const next = new Map(prev);
+      next.set(proof.turnNumber, { status: "verifying" });
+      return next;
+    });
+    const result = await verifyDiceRoll(proof);
+    setVerifyResults((prev) => {
+      const next = new Map(prev);
+      next.set(proof.turnNumber, { status: result.valid ? "valid" : "invalid", details: result.details });
+      return next;
+    });
+  }, []);
+
+  const verifyAll = useCallback(async () => {
+    if (!diceProofs || diceProofs.length === 0) return;
+    setVerifyingAll(true);
+    for (const proof of diceProofs) {
+      await verifyOne(proof);
+    }
+    setVerifyingAll(false);
+  }, [diceProofs, verifyOne]);
+
   if (moveHistory.length === 0) {
     return (
       <p style={{ fontSize: "0.75rem", color: "var(--color-text-faint)", textAlign: "center", padding: "12px 0" }}>
         No moves recorded for this game.
       </p>
     );
+  }
+
+  // Build a map from turnNumber to proof for quick lookup
+  const proofMap = new Map<number, DiceProof>();
+  if (diceProofs) {
+    for (const proof of diceProofs) {
+      proofMap.set(proof.turnNumber, proof);
+    }
   }
 
   // Dice distribution stats
@@ -110,6 +192,29 @@ function RollLog({ moveHistory }: { moveHistory: MoveRecord[] }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Verify All button */}
+      {diceProofs && diceProofs.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={verifyAll}
+            disabled={verifyingAll}
+            style={{
+              padding: "6px 14px",
+              fontSize: "0.75rem",
+              fontWeight: 600,
+              background: "var(--color-bg-subtle)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: 6,
+              color: "var(--color-text-primary)",
+              cursor: verifyingAll ? "wait" : "pointer",
+              opacity: verifyingAll ? 0.6 : 1,
+            }}
+          >
+            {verifyingAll ? "Verifying..." : "Verify All Rolls"}
+          </button>
+        </div>
+      )}
+
       {/* Turn-by-turn log */}
       <div>
         <SectionLabel>Turn Log</SectionLabel>
@@ -121,38 +226,92 @@ function RollLog({ moveHistory }: { moveHistory: MoveRecord[] }) {
                 <th style={thStyle}>Player</th>
                 <th style={thStyle}>Dice</th>
                 <th style={{ ...thStyle, textAlign: "left" }}>Moves</th>
+                {diceProofs && <th style={thStyle}>drand</th>}
+                {diceProofs && <th style={thStyle}>Proof</th>}
               </tr>
             </thead>
             <tbody>
-              {moveHistory.map((record) => (
-                <tr key={record.turnNumber} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
-                  <td style={tdStyle}>{record.turnNumber}</td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      display: "inline-block",
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      background: record.player === "white" ? "var(--color-text-primary)" : "var(--color-checker-black)",
-                      border: `1px solid ${record.player === "white" ? "var(--color-text-secondary)" : "var(--color-border-subtle)"}`,
-                      marginRight: 4,
-                      verticalAlign: "middle",
-                    }} />
-                    <span style={{ verticalAlign: "middle", textTransform: "capitalize" }}>{record.player}</span>
-                  </td>
-                  <td style={tdStyle}>
-                    <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
-                      <DiceFace value={record.dice[0]} />
-                      <DiceFace value={record.dice[1]} />
-                    </span>
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "left", fontFamily: "var(--font-mono)", fontSize: "0.6875rem" }}>
-                    {record.moves.length > 0
-                      ? record.moves.map((m) => formatMove(m, record.player)).join(", ")
-                      : "No moves"}
-                  </td>
-                </tr>
-              ))}
+              {moveHistory.map((record) => {
+                const proof = proofMap.get(record.turnNumber);
+                const vResult = verifyResults.get(record.turnNumber);
+                return (
+                  <tr key={record.turnNumber} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                    <td style={tdStyle}>{record.turnNumber}</td>
+                    <td style={tdStyle}>
+                      <span style={{
+                        display: "inline-block",
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: record.player === "white" ? "var(--color-text-primary)" : "var(--color-checker-black)",
+                        border: `1px solid ${record.player === "white" ? "var(--color-text-secondary)" : "var(--color-border-subtle)"}`,
+                        marginRight: 4,
+                        verticalAlign: "middle",
+                      }} />
+                      <span style={{ verticalAlign: "middle", textTransform: "capitalize" }}>{record.player}</span>
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
+                        <DiceFace value={record.dice[0]} />
+                        <DiceFace value={record.dice[1]} />
+                      </span>
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: "left", fontFamily: "var(--font-mono)", fontSize: "0.6875rem" }}>
+                      {record.moves.length > 0
+                        ? record.moves.map((m) => formatMove(m, record.player)).join(", ")
+                        : "No moves"}
+                    </td>
+                    {diceProofs && (
+                      <td style={tdStyle}>
+                        {proof ? (
+                          <a
+                            href={`https://api.drand.sh/${DRAND_CHAIN_HASH}/public/${proof.drandRound}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              fontSize: "0.625rem",
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--color-gold-primary)",
+                              textDecoration: "none",
+                            }}
+                            title={`drand round #${proof.drandRound}`}
+                          >
+                            #{proof.drandRound}
+                          </a>
+                        ) : (
+                          <span style={{ fontSize: "0.625rem", color: "var(--color-text-faint)" }}>—</span>
+                        )}
+                      </td>
+                    )}
+                    {diceProofs && (
+                      <td style={tdStyle}>
+                        {proof ? (
+                          vResult ? (
+                            <VerifyBadge status={vResult.status} details={vResult.details} />
+                          ) : (
+                            <button
+                              onClick={() => verifyOne(proof)}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                cursor: "pointer",
+                                fontSize: "0.625rem",
+                                color: "var(--color-gold-primary)",
+                                textDecoration: "underline",
+                                padding: 0,
+                              }}
+                            >
+                              verify
+                            </button>
+                          )
+                        ) : (
+                          <span style={{ fontSize: "0.625rem", color: "var(--color-text-faint)" }}>—</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -195,6 +354,7 @@ const tdStyle: React.CSSProperties = {
 function MatchRow({ match }: { match: MatchResult }) {
   const [expanded, setExpanded] = useState(false);
   const [moveHistory, setMoveHistory] = useState<MoveRecord[] | null>(null);
+  const [diceProofs, setDiceProofs] = useState<DiceProof[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const toggleExpand = useCallback(async () => {
@@ -206,12 +366,19 @@ function MatchRow({ match }: { match: MatchResult }) {
     if (moveHistory) return; // already loaded
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/game/${match.gameId}/history`);
-      if (res.ok) {
-        const data = await res.json();
+      const [histRes, proofsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/game/${match.gameId}/history`),
+        fetch(`${API_BASE}/api/game/${match.gameId}/dice-proofs`),
+      ]);
+      if (histRes.ok) {
+        const data = await histRes.json();
         setMoveHistory(data.moveHistory);
       } else {
         setMoveHistory([]);
+      }
+      if (proofsRes.ok) {
+        const data: DiceProofsResponse = await proofsRes.json();
+        setDiceProofs(data.rolls);
       }
     } catch {
       setMoveHistory([]);
@@ -262,7 +429,7 @@ function MatchRow({ match }: { match: MatchResult }) {
               Loading roll history...
             </p>
           ) : moveHistory ? (
-            <RollLog moveHistory={moveHistory} />
+            <RollLog moveHistory={moveHistory} diceProofs={diceProofs} />
           ) : null}
         </div>
       )}
@@ -311,7 +478,7 @@ function AIMatchRow({ match }: { match: AIMatchRecord }) {
       {expanded && (
         <div style={{ padding: "0 4px 14px" }}>
           {match.moveHistory && match.moveHistory.length > 0 ? (
-            <RollLog moveHistory={match.moveHistory} />
+            <RollLog moveHistory={match.moveHistory} diceProofs={null} />
           ) : (
             <p style={{ fontSize: "0.75rem", color: "var(--color-text-faint)", textAlign: "center", padding: "12px 0" }}>
               No roll history available for this game.
@@ -389,15 +556,26 @@ export default function VerifyRollsPage() {
               margin: 0,
               color: "var(--color-text-primary)",
             }}>
-              Provably Fair Dice
+              Verifiable Random Dice
             </h2>
           </div>
           <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", margin: 0, lineHeight: 1.6 }}>
-            All dice rolls use a <strong>commit-reveal protocol</strong> for provable fairness.
-            The server commits to a seed hash before each roll, then combines it with a client seed
-            to derive the dice deterministically. You can verify any roll by checking that the commit hash
-            matches the server seed and that the dice values were correctly derived.
-            Expand any match below to inspect the full roll history and dice distribution.
+            All dice rolls use <strong>drand verifiable randomness</strong> from the{" "}
+            <a
+              href="https://drand.love"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "var(--color-gold-primary)", textDecoration: "none" }}
+            >
+              League of Entropy
+            </a>
+            . Each roll fetches a BLS-signed random beacon published every 3 seconds by a distributed
+            network of independent organizations. The server cannot influence the randomness — it can only
+            choose which round to use. Dice are derived as{" "}
+            <code style={{ fontSize: "0.75rem", background: "var(--color-bg-subtle)", padding: "1px 4px", borderRadius: 3 }}>
+              SHA256(randomness + white + black + turn)
+            </code>
+            . Click &quot;Verify All&quot; on any match to cryptographically verify every roll client-side.
           </p>
         </Card>
 

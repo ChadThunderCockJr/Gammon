@@ -2,12 +2,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import {
   useAbstraxionAccount,
   useAbstraxionSigningClient,
 } from "@burnt-labs/abstraxion";
 import { toUtf8 } from "@cosmjs/encoding";
 import { BALANCE_POLL_INTERVAL_MS } from "@/lib/constants";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 // Dynamically import Crossmint to avoid SSR crashes (browser-only SDK)
 const CrossmintProvider = dynamic(
@@ -40,6 +42,8 @@ const PACK_TIERS: PackTier[] = [
 type PageState = "selecting" | "checkout" | "success" | "redeeming";
 
 export default function BuyTokensPage() {
+  const isNativeApp = useIsNativeApp();
+  const router = useRouter();
   const { data: account } = useAbstraxionAccount();
   const { client } = useAbstraxionSigningClient();
   const [pageState, setPageState] = useState<PageState>("selecting");
@@ -140,6 +144,11 @@ export default function BuyTokensPage() {
     return match ? parseInt(match[1], 10) : 0;
   };
 
+  // Redirect away if running inside native iOS app
+  useEffect(() => {
+    if (isNativeApp) router.replace("/");
+  }, [isNativeApp, router]);
+
   const formatGammon = (microAmount: string): string => {
     const num = parseInt(microAmount, 10) || 0;
     return (num / 1_000_000).toLocaleString(undefined, {
@@ -147,6 +156,8 @@ export default function BuyTokensPage() {
       maximumFractionDigits: 2,
     });
   };
+
+  if (isNativeApp) return null;
 
   return (
     <div

@@ -16,6 +16,7 @@ import { useGame } from "@/hooks/useGame";
 import { useAuth } from "@/hooks/useAuth";
 import { useBalance } from "@/hooks/useBalance";
 import { useSocialContext } from "@/contexts/SocialContext";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 import { WS_URL } from "@/lib/ws-config";
 import { PULSE_INTERVAL_MS, COUNTDOWN_TICK_MS, INVITE_TIMEOUT_MS } from "@/lib/constants";
 
@@ -599,6 +600,7 @@ export default function CreateMatchPage() {
   const { address, isConnected } = useAuth();
   const { balance, isLoading: balanceLoading } = useBalance();
   const social = useSocialContext();
+  const isNativeApp = useIsNativeApp();
 
   const {
     connected,
@@ -765,6 +767,7 @@ export default function CreateMatchPage() {
         >
           Play a Friend
         </span>
+        {!isNativeApp && (
         <div
           style={{
             display: "flex",
@@ -787,6 +790,7 @@ export default function CreateMatchPage() {
           </span>
           <span style={{ fontSize: "0.625rem", color: "var(--color-text-muted)" }}>USDC</span>
         </div>
+        )}
       </header>
 
       {/* ─── Main Content ─── */}
@@ -943,6 +947,7 @@ export default function CreateMatchPage() {
                 />
 
                 {/* Stake per Point */}
+                {!isNativeApp && (
                 <div style={{ marginBottom: 20 }}>
                   <SectionLabel>Stake per Point</SectionLabel>
                   <div
@@ -1080,9 +1085,10 @@ export default function CreateMatchPage() {
                     </a>
                   </div>
                 </div>
+                )}
 
                 {/* Doubling Cube */}
-                {stakePerPoint > 0 && (
+                {!isNativeApp && stakePerPoint > 0 && (
                   <div style={{ marginBottom: 20 }}>
                     <SectionLabel>Doubling Cube</SectionLabel>
                     <div

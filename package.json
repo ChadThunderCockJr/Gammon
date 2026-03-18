@@ -8,6 +8,7 @@
     "dev:passport-backend": "pnpm --filter @xion-beginner/passport-backend dev",
     "dev:backgammon-server": "pnpm --filter @xion-beginner/backgammon-server dev",
     "dev:backgammon-web": "pnpm --filter @xion-beginner/backgammon-web dev",
+    "dev:backgammon-ios": "pnpm --filter @xion-beginner/backgammon-ios start",
     "build": "pnpm -r build",
     "build:pyramid": "pnpm --filter @xion-beginner/burnt-pyramid build",
     "build:passport-web": "pnpm --filter @xion-beginner/passport-web build",
@@ -53,5 +54,9 @@
       "metro-file-map": "0.82.5",
       "metro-minify-terser": "0.82.5"
     }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "playwright": "^1.58.2"
   }
 }

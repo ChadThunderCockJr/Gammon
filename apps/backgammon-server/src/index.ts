@@ -124,6 +124,25 @@ app.get("/api/online-count", async (_req, res) => {
   res.json({ count });
 });
 
+app.get("/api/game/:gameId/dice-proofs", async (req, res) => {
+  const proofs = await socialStore.getDiceProofs(req.params.gameId);
+  if (!proofs) {
+    // Try in-memory from active game
+    const inMemory = gameManager.getDiceHistory(req.params.gameId);
+    if (inMemory.length === 0) {
+      res.status(404).json({ error: "Dice proofs not found" });
+    } else {
+      res.json({
+        gameId: req.params.gameId,
+        drandChain: "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+        rolls: inMemory,
+      });
+    }
+  } else {
+    res.json(proofs);
+  }
+});
+
 app.get("/api/game/:gameId/history", async (req, res) => {
   const moveHistory = await socialStore.getGameHistory(req.params.gameId);
   if (!moveHistory) {
@@ -174,6 +193,18 @@ async function handleGameOver(gameId: string, winner: Player, resultType: Result
 
   socialManager.recordMatchResult(game, winner, resultType);
   socialStore.saveGameHistory(game.id, game.gameState.moveHistory);
+
+  // Persist drand dice proofs
+  const diceProofs = gameManager.getDiceHistory(gameId);
+  if (diceProofs.length > 0) {
+    socialStore.saveDiceProofs(gameId, {
+      gameId,
+      drandChain: "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+      playerWhite: game.playerWhite?.address || "",
+      playerBlack: game.playerBlack?.address || "",
+      rolls: diceProofs,
+    });
+  }
 
   // If match continues, start next game after a delay
   if (matchResult && !matchResult.matchOver) {
@@ -578,6 +609,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           game_state: result.gameState,
           legal_moves: result.legalMoves,
           needs_confirmation: result.legalMoves.length === 0,
+          drand_proof: result.drandProof,
         });
         gameManager.sendToPlayer(opponentPlayer, {
           type: "dice_rolled",
@@ -586,6 +618,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           player: playerColor,
           game_state: result.gameState,
           legal_moves: [],
+          drand_proof: result.drandProof,
         });
         for (const spec of game.spectators) {
           gameManager.sendToPlayer(spec, {
@@ -595,6 +628,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
             player: playerColor,
             game_state: result.gameState,
             legal_moves: [],
+            drand_proof: result.drandProof,
           });
         }
       }
@@ -896,8 +930,8 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
       break;
     }
 
-    case "submit_client_seed": {
-      // Handled by commit-reveal dice protocol — currently using player address as seed
+    case "submit_client_seed" as string: {
+      // Deprecated: drand-based dice no longer needs client seeds
       break;
     }
 

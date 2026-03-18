@@ -14,6 +14,7 @@
     "@burnt-labs/signers": "1.0.0-alpha.6",
     "@cosmjs/encoding": "^0.38.1",
     "@crossmint/client-sdk-react-ui": "^2.6.16",
+    "@noble/curves": "^2.0.1",
     "@xion-beginner/backgammon-core": "workspace:*",
     "@xion-beginner/ui": "workspace:*",
     "clsx": "^2.1.1",

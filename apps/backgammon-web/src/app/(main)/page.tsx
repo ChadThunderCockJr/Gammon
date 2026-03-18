@@ -12,6 +12,7 @@ import { getLocalStats, getLocalMatches } from "@/lib/local-stats";
 import Tutorial from "@/components/Tutorial";
 import { ONLINE_COUNT_POLL_INTERVAL_MS } from "@/lib/constants";
 import { preloadGnubg } from "@/lib/gnubg";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 // ── Icons ──────────────────────────────────────────────────────
 
@@ -274,6 +275,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const { address, logout } = useAuth();
   const { balance, isLoading: balanceLoading } = useBalance();
+  const isNativeApp = useIsNativeApp();
   const social = useSocialContext();
   const { displayName, username, incomingRequests, pendingChallenges, acceptFriendRequest, rejectFriendRequest, acceptChallenge, declineChallenge } = social;
   const totalNotifications = (incomingRequests?.length ?? 0) + (pendingChallenges?.length ?? 0);
@@ -789,6 +791,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Wallet */}
+          {!isNativeApp && (
           <div
             onClick={() => router.push("/buy-tokens")}
             style={{
@@ -822,6 +825,7 @@ export default function DashboardPage() {
               USDC
             </span>
           </div>
+          )}
 
           {/* Logout */}
           <button
