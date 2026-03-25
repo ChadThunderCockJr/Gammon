@@ -36,7 +36,8 @@
     ],
     "patchedDependencies": {
       "@burnt-labs/abstraxion-core@1.0.0-alpha.67": "patches/@burnt-labs__abstraxion-core@1.0.0-alpha.67.patch",
-      "@burnt-labs/signers@1.0.0-alpha.6": "patches/@burnt-labs__signers@1.0.0-alpha.6.patch"
+      "@burnt-labs/signers@1.0.0-alpha.6": "patches/@burnt-labs__signers@1.0.0-alpha.6.patch",
+      "react-native@0.79.6": "patches/react-native+0.79.6+ios26-turbomodule-crash.patch"
     },
     "overrides": {
       "metro": "0.82.5",

@@ -1,0 +1,21 @@
+--- a/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
++++ b/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
+@@ -438,7 +438,17 @@
+     @try {
+       [inv invokeWithTarget:strongModule];
+     } @catch (NSException *exception) {
+-      throw convertNSExceptionToJSError(runtime, exception, std::string{moduleName}, methodNameStr);
++      if (shouldVoidMethodsExecuteSync_) {
++        throw convertNSExceptionToJSError(runtime, exception, std::string{moduleName}, methodNameStr);
++      } else {
++        // Cannot rethrow C++ exceptions from async dispatch - nothing can catch them,
++        // which causes std::terminate -> SIGABRT (crashes the app).
++        // Log the error instead. See: https://github.com/facebook/react-native/issues/54859
++        NSLog(@"[RCTTurboModule] Exception thrown while invoking async void method %s.%s: %@",
++            moduleName,
++            methodNameStr.c_str(),
++            exception);
++      }
+     } @finally {
+       [retainedObjectsForInvocation removeAllObjects];
+     }
