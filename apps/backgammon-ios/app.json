@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.burnt.backgammon",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "GCSupportsGameCenter": false
       }
     },
     "android": {
