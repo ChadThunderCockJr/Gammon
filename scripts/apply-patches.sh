@@ -50,14 +50,4 @@ if [ -f patches/@burnt-labs+abstraxion-react-native+1.0.0-alpha.16.patch ]; then
     echo "  @burnt-labs/abstraxion-react-native patch already applied or not needed"
 fi
 
-# Apply react-native iOS 26 TurboModule crash fix
-# See: https://github.com/facebook/react-native/issues/54859
-if [ -f patches/react-native+0.79.6+ios26-turbomodule-crash.patch ]; then
-  check_version "node_modules/react-native" "0.79.6" "react-native"
-  patch -p1 -N --dry-run < patches/react-native+0.79.6+ios26-turbomodule-crash.patch > /dev/null 2>&1 && \
-    patch -p1 -N < patches/react-native+0.79.6+ios26-turbomodule-crash.patch && \
-    echo "  react-native iOS 26 TurboModule crash fix applied" || \
-    echo "  react-native iOS 26 patch already applied or not needed"
-fi
-
 echo "Patches done."
