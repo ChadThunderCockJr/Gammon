@@ -127,6 +127,16 @@ app.get("/api/online-count", async (_req, res) => {
   res.json({ count });
 });
 
+// Custodial balance query
+app.get("/api/balance/:address", async (req, res) => {
+  try {
+    const balance = await balanceService.getBalance(req.params.address);
+    res.json({ address: req.params.address, balance });
+  } catch {
+    res.status(500).json({ error: "Failed to query balance" });
+  }
+});
+
 app.get("/api/game/:gameId/dice-proofs", async (req, res) => {
   const proofs = await socialStore.getDiceProofs(req.params.gameId);
   if (!proofs) {
