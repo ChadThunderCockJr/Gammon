@@ -382,32 +382,56 @@ function SlideOutMenu({
         >
           <FocusTrap>
             <div
-              className="panel p-6 max-w-sm mx-4"
+              className="panel max-w-sm mx-4"
               role="dialog"
               aria-modal="true"
               aria-labelledby="resign-dialog-title"
+              style={{ padding: "20px 24px" }}
               onClick={(e) => e.stopPropagation()}
             >
-              <h3 id="resign-dialog-title" className="text-lg font-bold mb-2">Resign Game?</h3>
-            <p className="text-sm text-[var(--color-text-muted)] mb-5">
-              This counts as a loss. Are you sure you want to resign?
-            </p>
-            <div className="flex gap-3">
-              <button onClick={() => setShowResignConfirm(false)} className="btn-secondary flex-1">
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowResignConfirm(false);
-                  onResign();
-                  onClose();
-                }}
-                aria-label="Resign game"
-                className="btn-danger flex-1"
-              >
-                Resign
-              </button>
-            </div>
+              <h3 id="resign-dialog-title" style={{ fontSize: "1.0625rem", fontWeight: 700, marginBottom: 6, color: "var(--color-text-primary)" }}>Resign Game?</h3>
+              <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginBottom: 20 }}>
+                This counts as a loss. Are you sure you want to resign?
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  onClick={() => setShowResignConfirm(false)}
+                  style={{
+                    flex: 1,
+                    padding: "10px 16px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 600,
+                    borderRadius: "var(--radius-button)",
+                    background: "var(--color-bg-surface)",
+                    color: "var(--color-text-primary)",
+                    border: "1px solid var(--color-border-subtle)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowResignConfirm(false);
+                    onResign();
+                    onClose();
+                  }}
+                  aria-label="Resign game"
+                  style={{
+                    flex: 1,
+                    padding: "10px 16px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 600,
+                    borderRadius: "var(--radius-button)",
+                    background: "transparent",
+                    color: "var(--color-danger)",
+                    border: "1px solid var(--color-danger-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Resign
+                </button>
+              </div>
             </div>
           </FocusTrap>
         </div>
