@@ -58,8 +58,8 @@ function isSingleMoveLegal(
       const exactDest = from + die;
       if (exactDest === 25) return { legal: true, to: 25 }; // Exact bear off
       if (exactDest > 25) {
-        // Over-bearing: only legal if no black checker on a point further from bear-off (lower numbers)
-        for (let i = 19; i < from; i++) {
+        // Over-bearing: only legal if no black checker on a higher point (closer to bear-off)
+        for (let i = from + 1; i <= 24; i++) {
           if (board.points[i] < 0) return { legal: false, to: 25 };
         }
         return { legal: true, to: 25 };
