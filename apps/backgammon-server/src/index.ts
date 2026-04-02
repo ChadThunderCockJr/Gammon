@@ -133,9 +133,11 @@ import * as brale from "./brale.js";
 // Get Plaid link token (user initiates bank connection)
 app.post("/api/brale/plaid-link", express.json(), async (req, res) => {
   if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  const { legalName, email, phone, dob, redirect_uri } = req.body;
+  if (!legalName || !email) { res.status(400).json({ error: "Missing legalName or email" }); return; }
   try {
     const accountId = await brale.getAccountId();
-    const { linkToken } = await brale.createPlaidLinkToken(accountId, req.body.redirect_uri);
+    const { linkToken } = await brale.createPlaidLinkToken(accountId, { legalName, email, phone, dob }, redirect_uri);
     res.json({ linkToken });
   } catch (err) {
     res.status(500).json({ error: "Failed to create Plaid link token" });

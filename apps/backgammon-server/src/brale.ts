@@ -96,8 +96,17 @@ export async function getAccountId(): Promise<string> {
 // ── Plaid Link (for ACH Debit onramp) ───────────────────
 
 /** Create a Plaid link token for the user to connect their bank account */
-export async function createPlaidLinkToken(accountId: string, redirectUri?: string): Promise<{ linkToken: string }> {
-  const body: any = {};
+export async function createPlaidLinkToken(
+  accountId: string,
+  userInfo: { legalName: string; email: string; phone?: string; dob?: string },
+  redirectUri?: string,
+): Promise<{ linkToken: string }> {
+  const body: any = {
+    legal_name: userInfo.legalName,
+    email_address: userInfo.email,
+  };
+  if (userInfo.phone) body.phone_number = userInfo.phone;
+  if (userInfo.dob) body.date_of_birth = userInfo.dob;
   if (redirectUri) body.redirect_uri = redirectUri;
 
   const data = await braleRequest("POST", `/accounts/${accountId}/plaid/link_token`, body);

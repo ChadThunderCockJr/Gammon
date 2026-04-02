@@ -6,7 +6,7 @@ import { useBalance } from "@/hooks/useBalance";
 import { API_BASE } from "@/lib/api";
 
 type Tab = "deposit" | "withdraw";
-type FlowStep = "idle" | "linking" | "amount" | "processing" | "done" | "error";
+type FlowStep = "idle" | "userinfo" | "linking" | "amount" | "processing" | "done" | "error";
 
 export default function WalletPage() {
   const { address, isConnected } = useAuth();
@@ -17,15 +17,24 @@ export default function WalletPage() {
   const [bankAddressId, setBankAddressId] = useState<string | null>(null);
   const [transferId, setTransferId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [userInfo, setUserInfo] = useState({ legalName: "", email: "" });
 
   const startPlaidLink = useCallback(async () => {
+    if (!userInfo.legalName || !userInfo.email) {
+      setStep("userinfo");
+      return;
+    }
     setStep("linking");
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/brale/plaid-link`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ redirect_uri: window.location.href }),
+        body: JSON.stringify({
+          legalName: userInfo.legalName,
+          email: userInfo.email,
+          redirect_uri: window.location.href,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -36,8 +45,6 @@ export default function WalletPage() {
       }
       const { linkToken } = await res.json();
 
-      // Open Plaid Link in a new window with the link token
-      // Plaid Link will redirect back after bank connection
       window.open(
         `https://cdn.plaid.com/link/v2/stable/link.html?isWebview=true&token=${linkToken}`,
         "plaid-link",
@@ -48,7 +55,7 @@ export default function WalletPage() {
       setError(err instanceof Error ? err.message : "Failed to connect bank");
       setStep("error");
     }
-  }, []);
+  }, [userInfo]);
 
   const submitDeposit = useCallback(async () => {
     if (!address || !amount) return;
@@ -198,6 +205,56 @@ export default function WalletPage() {
               }}
             >
               Connect Bank Account
+            </button>
+          </>
+        )}
+
+        {step === "userinfo" && (
+          <>
+            <p style={{ color: "var(--color-text-secondary)", fontSize: "0.875rem", marginBottom: 16 }}>
+              Enter your details to connect your bank account.
+            </p>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", fontSize: "0.75rem", color: "var(--color-text-muted)", marginBottom: 4 }}>Full Legal Name</label>
+              <input
+                type="text"
+                value={userInfo.legalName}
+                onChange={(e) => setUserInfo((u) => ({ ...u, legalName: e.target.value }))}
+                placeholder="John Doe"
+                style={{
+                  width: "100%", padding: "10px 14px", fontSize: "0.875rem",
+                  borderRadius: "var(--radius-button)", background: "var(--color-bg-elevated)",
+                  border: "1px solid var(--color-border-subtle)", color: "var(--color-text-primary)", outline: "none",
+                }}
+              />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "block", fontSize: "0.75rem", color: "var(--color-text-muted)", marginBottom: 4 }}>Email Address</label>
+              <input
+                type="email"
+                value={userInfo.email}
+                onChange={(e) => setUserInfo((u) => ({ ...u, email: e.target.value }))}
+                placeholder="you@example.com"
+                style={{
+                  width: "100%", padding: "10px 14px", fontSize: "0.875rem",
+                  borderRadius: "var(--radius-button)", background: "var(--color-bg-elevated)",
+                  border: "1px solid var(--color-border-subtle)", color: "var(--color-text-primary)", outline: "none",
+                }}
+              />
+            </div>
+            <button
+              onClick={startPlaidLink}
+              disabled={!userInfo.legalName || !userInfo.email}
+              style={{
+                width: "100%", padding: "12px 0", fontSize: "0.875rem", fontWeight: 500,
+                borderRadius: "var(--radius-button)",
+                background: userInfo.legalName && userInfo.email ? "var(--color-gold-primary)" : "var(--color-bg-elevated)",
+                color: userInfo.legalName && userInfo.email ? "var(--color-accent-fg)" : "var(--color-text-muted)",
+                border: "none", cursor: userInfo.legalName && userInfo.email ? "pointer" : "default",
+                fontFamily: "var(--font-body)",
+              }}
+            >
+              Continue
             </button>
           </>
         )}
