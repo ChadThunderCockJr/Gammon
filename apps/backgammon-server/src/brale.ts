@@ -236,5 +236,5 @@ export async function getTransferStatus(accountId: string, transferId: string): 
 // ── Config check ─────────────────────────────────────────
 
 export function isBraleConfigured(): boolean {
-  return !!(BRALE_API_KEY && BRALE_ACCOUNT_ID);
+  return !!(BRALE_CLIENT_SECRET && BRALE_ACCOUNT_ID);
 }
