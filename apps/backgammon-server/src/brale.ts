@@ -91,12 +91,14 @@ export async function getAccountId(): Promise<string> {
   // Always fetch from API to get the correct account ID
   try {
     const data = await braleRequest("GET", "/accounts");
+    logger.info("Brale accounts response", { data: JSON.stringify(data) });
     const id = data.data?.[0]?.id || BRALE_ACCOUNT_ID;
     if (id !== BRALE_ACCOUNT_ID && BRALE_ACCOUNT_ID) {
       logger.warn("Brale account ID mismatch", { env: BRALE_ACCOUNT_ID, api: id });
     }
     return id;
-  } catch {
+  } catch (err) {
+    logger.error("Brale accounts fetch failed", { error: String(err) });
     return BRALE_ACCOUNT_ID;
   }
 }
