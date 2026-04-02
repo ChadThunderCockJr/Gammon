@@ -5,6 +5,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import cors from "cors";
 import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_MESSAGES, WS_MAX_PAYLOAD_BYTES, INTER_GAME_DELAY_MS, ONLINE_CLEANUP_INTERVAL_MS } from "./config.js";
 import { GameManager } from "./game-manager.js";
+import { EscrowBalanceService } from "./escrow-balance-service.js";
+import { CustodialBalanceService } from "./custodial-balance-service.js";
+import type { BalanceService } from "./balance-service.js";
 import { Matchmaker } from "./matchmaking.js";
 import { MatchManager } from "./match-manager.js";
 import { SocialManager } from "./social-manager.js";
@@ -124,6 +127,16 @@ app.get("/api/online-count", async (_req, res) => {
   res.json({ count });
 });
 
+// Custodial balance query
+app.get("/api/balance/:address", async (req, res) => {
+  try {
+    const balance = await balanceService.getBalance(req.params.address);
+    res.json({ address: req.params.address, balance });
+  } catch {
+    res.status(500).json({ error: "Failed to query balance" });
+  }
+});
+
 app.get("/api/game/:gameId/dice-proofs", async (req, res) => {
   const proofs = await socialStore.getDiceProofs(req.params.gameId);
   if (!proofs) {
@@ -158,7 +171,19 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_PAYLOA
 // Initialize Redis
 getRedis();
 
-const gameManager = new GameManager();
+// Initialize PostgreSQL (non-blocking — falls back to Redis if unavailable)
+import { initDatabase } from "./db.js";
+initDatabase().then((ok) => {
+  if (ok) logger.info("PostgreSQL connected");
+  else logger.warn("PostgreSQL not available — using Redis-only persistence");
+});
+
+// Balance service: custodial (PostgreSQL ledger) when DATABASE_URL is set, escrow (on-chain) otherwise
+const balanceService: BalanceService = process.env.DATABASE_URL
+  ? new CustodialBalanceService()
+  : new EscrowBalanceService();
+logger.info(`Balance service: ${process.env.DATABASE_URL ? "custodial" : "escrow"}`);
+const gameManager = new GameManager(balanceService);
 const matchmaker = new Matchmaker(gameManager);
 const matchManager = new MatchManager();
 

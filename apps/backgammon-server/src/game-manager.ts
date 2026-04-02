@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { GameDiceHistory, createDiceProof, type DrandDiceProof } from "./dice.js";
 import { latestBeacon } from "./drand.js";
 import { DEFAULT_TURN_TIME_LIMIT_SEC, DOUBLE_DEPOSIT_TIMEOUT_MS, STALLING_MIN_MOVES, STALLING_THRESHOLD_PCTG, DISCONNECT_GRACE_SEC, DISCONNECT_GRACE_DOUBLE_SEC, DISCONNECT_CHECK_INTERVAL_MS } from "./config.js";
+import { logger } from "./logger.js";
 import {
   createGameState,
   setDice,
@@ -17,7 +18,7 @@ import {
   type Move,
   type ResultType,
 } from "@xion-beginner/backgammon-core";
-import { getEscrowClient } from "./escrow.js";
+import type { BalanceService } from "./balance-service.js";
 import type { ServerGame, PlayerConnection, ServerMessage } from "./types.js";
 
 export class GameManager {
@@ -25,6 +26,11 @@ export class GameManager {
   private playerGames = new Map<string, string>(); // address -> gameId
   private diceHistories = new Map<string, GameDiceHistory>();
   private gameLocks = new Map<string, Promise<void>>();
+  private balanceService: BalanceService | null;
+
+  constructor(balanceService?: BalanceService) {
+    this.balanceService = balanceService ?? null;
+  }
 
   private async withGameLock<T>(gameId: string, fn: () => T | Promise<T>): Promise<T> {
     const prev = this.gameLocks.get(gameId) ?? Promise.resolve();
@@ -40,6 +46,23 @@ export class GameManager {
   }
 
   private async persistGame(game: ServerGame): Promise<void> {
+    // Persist to PostgreSQL (primary) and Redis (cache for backward compat)
+    try {
+      const gameStore = await import("./game-store.js");
+      await gameStore.persistGame(
+        game.id,
+        game.playerWhite?.address || null,
+        game.playerBlack?.address || null,
+        game.wagerAmount,
+        game.status,
+        game.escrowStatus,
+        game.gameState,
+        game.turnTimeLimit,
+      );
+    } catch {
+      // PostgreSQL persistence failed, fall through to Redis
+    }
+
     try {
       const { getRedis: getR } = await import("./redis.js");
       const r = getR();
@@ -55,24 +78,112 @@ export class GameManager {
         pendingConfirmation: game.pendingConfirmation,
         moveHistory: game.gameState.moveHistory || [],
       };
-      await r.set(`active_game:${game.id}`, JSON.stringify(serializable), "EX", 7200); // 2 hour TTL
+      await r.set(`active_game:${game.id}`, JSON.stringify(serializable), "EX", 7200);
     } catch {
-      // Non-critical — don't crash on persistence failure
+      // Non-critical
+    }
+  }
+
+  /** Persist a dice roll to PostgreSQL for the audit trail */
+  async persistDiceRoll(
+    gameId: string,
+    turnNumber: number,
+    player: string,
+    die1: number,
+    die2: number,
+    drandProof?: { round: number; randomness: string; signature: string },
+    drandFailed?: boolean,
+  ): Promise<void> {
+    try {
+      const gameStore = await import("./game-store.js");
+      await gameStore.persistDiceRoll(gameId, turnNumber, player, die1, die2, drandProof, drandFailed);
+    } catch {
+      // Non-critical
+    }
+  }
+
+  /** Persist a move to PostgreSQL for replay/audit */
+  async persistMoveRecord(
+    gameId: string,
+    turnNumber: number,
+    player: string,
+    from: number,
+    to: number,
+    gameStateAfter: GameState,
+  ): Promise<void> {
+    try {
+      const gameStore = await import("./game-store.js");
+      await gameStore.persistMove(gameId, turnNumber, player, from, to, gameStateAfter);
+    } catch {
+      // Non-critical
     }
   }
 
   private async deletePersistedGame(gameId: string): Promise<void> {
+    // Mark game as finished in PostgreSQL
+    try {
+      const gameStore = await import("./game-store.js");
+      const game = this.games.get(gameId);
+      await gameStore.finishGame(gameId, game?.status || "finished", game?.escrowStatus || "none");
+    } catch {
+      // Non-critical
+    }
+
+    // Clean up Redis cache
     try {
       const { getRedis: getR } = await import("./redis.js");
       const r = getR();
       if (!r) return;
       await r.del(`active_game:${gameId}`);
     } catch {
-      // Non-critical failure
+      // Non-critical
     }
   }
 
   async restoreGames(): Promise<number> {
+    // Try PostgreSQL first, fall back to Redis
+    try {
+      const gameStore = await import("./game-store.js");
+      const activeGames = await gameStore.loadActiveGames();
+      if (activeGames.length > 0) {
+        let restored = 0;
+        for (const data of activeGames) {
+          if (data.status !== "playing") continue;
+          const game: ServerGame = {
+            id: data.id,
+            gameState: data.gameState,
+            wagerAmount: data.wagerAmount,
+            status: data.status as ServerGame["status"],
+            playerWhite: null,
+            playerBlack: null,
+            spectators: [],
+            createdAt: Date.now(),
+            turnTimer: null,
+            turnTimeLimit: data.turnTimeLimit,
+            turnMoveStack: [],
+            pendingConfirmation: null,
+            disconnectTimer: null,
+            disconnectedPlayer: null,
+            disconnectedAt: null,
+            escrowStatus: data.escrowStatus as ServerGame["escrowStatus"],
+            pendingResignation: null,
+            moveTimes: [],
+            stallingWarned: false,
+            pendingDoubleDeposit: null,
+          };
+          this.games.set(game.id, game);
+          if (data.playerWhite) this.playerGames.set(data.playerWhite, game.id);
+          if (data.playerBlack) this.playerGames.set(data.playerBlack, game.id);
+          restored++;
+        }
+        logger.info(`Restored ${restored} games from PostgreSQL`);
+        return restored;
+      }
+    } catch {
+      // PostgreSQL not available, fall back to Redis
+    }
+
+    // Redis fallback
     try {
       const { getRedis: getR } = await import("./redis.js");
       const r = getR();
@@ -91,7 +202,7 @@ export class GameManager {
             gameState: data.gameState,
             wagerAmount: data.wagerAmount,
             status: data.status,
-            playerWhite: null, // Players need to reconnect
+            playerWhite: null,
             playerBlack: null,
             spectators: [],
             createdAt: Date.now(),
@@ -110,7 +221,6 @@ export class GameManager {
           };
           this.games.set(game.id, game);
 
-          // Track player-game mappings for reconnection
           if (data.playerWhiteAddress) {
             this.playerGames.set(data.playerWhiteAddress, game.id);
           }
@@ -239,10 +349,13 @@ export class GameManager {
       game.gameState.movesRemaining
     );
 
+    const drandFailed = !drandProof;
+
     // Start turn timer — player must always confirm, even with no legal moves
     this.startTurnTimer(game);
 
     void this.persistGame(game);
+    void this.persistDiceRoll(gameId, turnNumber, playerColor, die1, die2, drandProof, drandFailed);
 
     return { dice: [die1, die2], gameState: game.gameState, legalMoves, drandProof, drandFailed };
   }
@@ -273,6 +386,9 @@ export class GameManager {
 
     const move: Move = { from, to, die };
     game.gameState = newState;
+
+    // Persist move to PostgreSQL for audit trail
+    void this.persistMoveRecord(gameId, game.gameState.turnNumber, playerColor!, from, to, newState);
 
     // Get remaining legal moves
     const legalMoves = newState.movesRemaining.length > 0
@@ -464,11 +580,10 @@ export class GameManager {
 
     if (!doublerAddress) return null;
 
-    // Call escrow contract to transition to AwaitingDoubleDeposits
-    const escrow = getEscrowClient();
-    if (!escrow) return null;
+    // Transition to AwaitingDoubleDeposits via balance service
+    if (!this.balanceService) return null;
 
-    const success = await escrow.offerDouble(gameId, doublerAddress, newCubeValue);
+    const success = await this.balanceService.offerDouble(gameId, doublerAddress, newCubeValue);
     if (!success) return null;
 
     // Calculate additional deposit: old_cube * wager
@@ -508,16 +623,15 @@ export class GameManager {
     const pending = game.pendingDoubleDeposit;
     if (playerAddress !== pending.doubler && playerAddress !== pending.responder) return null;
 
-    // Query on-chain escrow to verify the deposit
-    const escrow = getEscrowClient();
-    if (!escrow) return null;
+    // Verify deposit via balance service
+    if (!this.balanceService) return null;
 
-    const info = await escrow.queryEscrowStatus(gameId);
-    if (!info || !info.pendingDouble) return null;
+    const depositStatus = await this.balanceService.verifyDoubleDeposit(gameId);
+    if (!depositStatus) return null;
 
-    // Update our tracking based on on-chain state
-    pending.doublerDeposited = info.pendingDouble.doublerDeposited;
-    pending.responderDeposited = info.pendingDouble.responderDeposited;
+    // Update our tracking based on balance service state
+    pending.doublerDeposited = depositStatus.doublerDeposited;
+    pending.responderDeposited = depositStatus.responderDeposited;
 
     const depositsComplete = pending.doublerDeposited && pending.responderDeposited;
 
@@ -562,10 +676,9 @@ export class GameManager {
     const game = this.games.get(gameId);
     if (!game || !game.pendingDoubleDeposit) return;
 
-    // Cancel the escrow double on-chain (refunds happen in contract)
-    const escrow = getEscrowClient();
-    if (escrow) {
-      await escrow.cancel(gameId);
+    // Cancel the pending double via balance service (refunds happen automatically)
+    if (this.balanceService) {
+      await this.balanceService.cancelFunds(gameId);
     }
 
     this.clearDoubleDepositTimer(game);
@@ -608,10 +721,9 @@ export class GameManager {
     const playerColor = this.getPlayerColor(game, playerAddress);
     if (!playerColor) return null;
 
-    // Settle escrow: rejecter forfeits, doubler gets pot
-    const escrow = getEscrowClient();
-    if (escrow) {
-      await escrow.rejectDouble(gameId, playerAddress);
+    // Reject double via balance service: rejecter forfeits, doubler gets pot
+    if (this.balanceService) {
+      await this.balanceService.rejectDouble(gameId, playerAddress);
     }
 
     const result = rejectDouble(game.gameState, playerColor);
@@ -679,36 +791,33 @@ export class GameManager {
     return true;
   }
 
-  // ── Escrow Integration ────────────────────────────────────────
+  // ── Balance Service Integration ────────────────────────────────
 
-  async createEscrowForGame(gameId: string, playerA: string, playerB: string, wagerAmount: number): Promise<boolean> {
-    const escrow = getEscrowClient();
-    if (!escrow) return false;
+  async lockFundsForGame(gameId: string, playerA: string, playerB: string, wagerAmount: number): Promise<boolean> {
+    if (!this.balanceService) return false;
     const game = this.games.get(gameId);
     if (!game) return false;
 
-    const [balA, balB] = await Promise.all([
-      escrow.queryBalance(playerA),
-      escrow.queryBalance(playerB),
+    const [hasA, hasB] = await Promise.all([
+      this.balanceService.checkBalance(playerA, wagerAmount),
+      this.balanceService.checkBalance(playerB, wagerAmount),
     ]);
-    if (parseInt(balA) < wagerAmount || parseInt(balB) < wagerAmount) return false;
+    if (!hasA || !hasB) return false;
 
-    const created = await escrow.createEscrow(gameId, playerA, playerB, String(wagerAmount));
-    if (created) {
+    const locked = await this.balanceService.lockFunds(gameId, playerA, playerB, wagerAmount);
+    if (locked) {
       game.escrowStatus = "pending_deposits";
       void this.persistGame(game);
     }
-    return created;
+    return locked;
   }
 
-  async settleEscrow(gameId: string, winner: string, _resultType: ResultType): Promise<boolean> {
-    const escrow = getEscrowClient();
-    if (!escrow) return false;
+  async settleFunds(gameId: string, winner: string, resultType: ResultType): Promise<boolean> {
+    if (!this.balanceService) return false;
     const game = this.games.get(gameId);
     if (!game || game.escrowStatus !== "active") return false;
 
-    // Contract now uses actual deposited amounts (cube-aware), no multiplier needed
-    const settled = await escrow.settle(gameId, winner);
+    const settled = await this.balanceService.settleFunds(gameId, winner, resultType);
     if (settled) game.escrowStatus = "settled";
     return settled;
   }

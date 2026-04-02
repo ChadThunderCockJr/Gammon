@@ -1,0 +1,19 @@
+{
+  "name": "Gammon — Provably Fair Backgammon",
+  "short_name": "Gammon",
+  "description": "Competitive backgammon with provably fair dice, AI analysis, and USDC wagering",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#040604",
+  "theme_color": "#581428",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["games", "entertainment"]
+}
