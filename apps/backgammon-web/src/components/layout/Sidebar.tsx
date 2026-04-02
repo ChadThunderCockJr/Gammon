@@ -232,7 +232,9 @@ export function Sidebar() {
       <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <NavItem icon={Icons.home} label="Home" href="/" active={isActive("/")} />
         <NavItem icon={Icons.play} label="Play" href="/matchmaking" active={isActive("/matchmaking")} />
+        <NavItem icon={Icons.trophy} label="Tournaments" href="/tournaments" active={isActive("/tournaments")} />
         <NavItem icon={Icons.users} label="Social" href="/social" active={isActive("/social")} />
+        <NavItem icon={Icons.wallet} label="Wallet" href="/wallet" active={isActive("/wallet")} />
       </nav>
 
       <div
