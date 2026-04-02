@@ -11,35 +11,73 @@
 import { logger } from "./logger.js";
 
 const BRALE_BASE_URL = process.env.BRALE_API_URL || "https://api.brale.xyz";
-const BRALE_API_KEY = process.env.BRALE_API_KEY || "";
+const BRALE_CLIENT_ID = process.env.BRALE_ACCOUNT_ID || ""; // client_id = account_id
+const BRALE_CLIENT_SECRET = process.env.BRALE_API_KEY || "";
 const BRALE_ACCOUNT_ID = process.env.BRALE_ACCOUNT_ID || "";
-const BRALE_NETWORK = process.env.BRALE_NETWORK || "xion_testnet"; // "xion" for mainnet
+const BRALE_NETWORK = process.env.BRALE_NETWORK || "xion_testnet";
 
-interface BraleHeaders {
-  "Content-Type": string;
-  Authorization: string;
-  "Idempotency-Key"?: string;
+// ── OAuth2 Token Management ─────────────────────────────
+
+let cachedToken: string | null = null;
+let tokenExpiresAt = 0;
+
+/** Exchange client credentials for a short-lived Bearer token (OAuth2) */
+async function getAccessToken(): Promise<string> {
+  // Return cached token if still valid (with 60s buffer)
+  if (cachedToken && Date.now() < tokenExpiresAt - 60_000) {
+    return cachedToken;
+  }
+
+  const credentials = Buffer.from(`${BRALE_CLIENT_ID}:${BRALE_CLIENT_SECRET}`).toString("base64");
+
+  const res = await fetch(`${BRALE_BASE_URL}/oauth/token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${credentials}`,
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    logger.error("Brale OAuth token exchange failed", { status: res.status, body: text });
+    throw new Error(`Brale auth failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  cachedToken = data.access_token;
+  tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+
+  logger.info("Brale OAuth token acquired", { expiresIn: data.expires_in });
+  return cachedToken!;
 }
 
-function headers(idempotencyKey?: string): BraleHeaders {
-  const h: BraleHeaders = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${BRALE_API_KEY}`,
-  };
-  if (idempotencyKey) h["Idempotency-Key"] = idempotencyKey;
-  return h;
-}
+// ── API Request Helper ──────────────────────────────────
 
 async function braleRequest(method: string, path: string, body?: object, idempotencyKey?: string): Promise<any> {
+  const token = await getAccessToken();
+
+  const hdrs: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+  if (idempotencyKey) hdrs["Idempotency-Key"] = idempotencyKey;
+
   const url = `${BRALE_BASE_URL}${path}`;
   const res = await fetch(url, {
     method,
-    headers: headers(idempotencyKey),
+    headers: hdrs,
     body: body ? JSON.stringify(body) : undefined,
   });
 
   if (!res.ok) {
     const text = await res.text();
+    // If 401, clear cached token so next request re-authenticates
+    if (res.status === 401) {
+      cachedToken = null;
+      tokenExpiresAt = 0;
+    }
     logger.error("Brale API error", { method, path, status: res.status, body: text });
     throw new Error(`Brale API ${res.status}: ${text}`);
   }
