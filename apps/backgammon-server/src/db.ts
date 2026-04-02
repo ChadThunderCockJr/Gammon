@@ -102,6 +102,66 @@ export async function initDatabase(): Promise<boolean> {
         settled_at TIMESTAMPTZ
       );
 
+      CREATE TABLE IF NOT EXISTS player_profiles (
+        address TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL DEFAULT '',
+        username TEXT UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS player_ratings (
+        address TEXT PRIMARY KEY,
+        rating INTEGER NOT NULL DEFAULT 1500,
+        rating_change INTEGER NOT NULL DEFAULT 0,
+        total_games INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS player_stats (
+        address TEXT PRIMARY KEY,
+        wins INTEGER NOT NULL DEFAULT 0,
+        losses INTEGER NOT NULL DEFAULT 0,
+        current_streak INTEGER NOT NULL DEFAULT 0,
+        current_streak_type TEXT NOT NULL DEFAULT '',
+        best_streak INTEGER NOT NULL DEFAULT 0,
+        total_gammons INTEGER NOT NULL DEFAULT 0,
+        total_backgammons INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS match_results (
+        id SERIAL PRIMARY KEY,
+        address TEXT NOT NULL,
+        game_id TEXT NOT NULL,
+        opponent TEXT NOT NULL,
+        opponent_name TEXT NOT NULL DEFAULT '',
+        result TEXT NOT NULL,
+        result_type TEXT NOT NULL DEFAULT 'normal',
+        wager_amount INTEGER NOT NULL DEFAULT 0,
+        rating_change INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS friendships (
+        player_a TEXT NOT NULL,
+        player_b TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (player_a, player_b)
+      );
+
+      CREATE TABLE IF NOT EXISTS friend_requests (
+        from_address TEXT NOT NULL,
+        to_address TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (from_address, to_address)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_match_results_address ON match_results(address);
+      CREATE INDEX IF NOT EXISTS idx_match_results_created ON match_results(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_friendships_b ON friendships(player_b);
+      CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_address);
+      CREATE INDEX IF NOT EXISTS idx_player_profiles_username ON player_profiles(username);
       CREATE INDEX IF NOT EXISTS idx_moves_game_id ON moves(game_id);
       CREATE INDEX IF NOT EXISTS idx_dice_rolls_game_id ON dice_rolls(game_id);
       CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
