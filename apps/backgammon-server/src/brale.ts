@@ -30,7 +30,7 @@ async function getAccessToken(): Promise<string> {
 
   const credentials = Buffer.from(`${BRALE_CLIENT_ID}:${BRALE_CLIENT_SECRET}`).toString("base64");
 
-  const res = await fetch(`${BRALE_BASE_URL}/oauth/token`, {
+  const res = await fetch("https://auth.brale.xyz/oauth2/token", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
