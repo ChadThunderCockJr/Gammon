@@ -1,4 +1,4 @@
-FROM node:20-slim AS base
+FROM node:20-slim
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10 --activate
@@ -15,35 +15,15 @@ COPY apps/backgammon-server/package.json apps/backgammon-server/
 COPY packages/backgammon-core/package.json packages/backgammon-core/
 COPY packages/tsconfig/ packages/tsconfig/
 
-# Install dependencies
+# Install all dependencies (including tsx for running TypeScript)
 RUN pnpm install --frozen-lockfile --filter @xion-beginner/backgammon-server...
 
 # Copy source code
 COPY apps/backgammon-server/ apps/backgammon-server/
 COPY packages/backgammon-core/ packages/backgammon-core/
 
-# Build
-WORKDIR /app/apps/backgammon-server
-RUN pnpm run build
-
-# Production stage
-FROM node:20-slim AS production
-RUN corepack enable && corepack prepare pnpm@10 --activate
-
-WORKDIR /app
-COPY --from=base /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/.npmrc ./
-COPY --from=base /app/patches/ patches/
-COPY --from=base /app/scripts/ scripts/
-COPY --from=base /app/apps/backgammon-server/package.json apps/backgammon-server/
-COPY --from=base /app/packages/backgammon-core/package.json packages/backgammon-core/
-COPY --from=base /app/packages/tsconfig/ packages/tsconfig/
-
-RUN pnpm install --frozen-lockfile --prod --filter @xion-beginner/backgammon-server...
-
-COPY --from=base /app/apps/backgammon-server/dist/ apps/backgammon-server/dist/
-COPY --from=base /app/packages/backgammon-core/ packages/backgammon-core/
-
 WORKDIR /app/apps/backgammon-server
 EXPOSE 3001
 
-CMD ["node", "dist/index.js"]
+# Use tsx to run TypeScript directly (handles raw TS workspace packages)
+CMD ["npx", "tsx", "src/index.ts"]
