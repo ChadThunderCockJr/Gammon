@@ -157,6 +157,33 @@ export async function initDatabase(): Promise<boolean> {
         PRIMARY KEY (from_address, to_address)
       );
 
+      CREATE TABLE IF NOT EXISTS tournaments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        entry_fee INTEGER NOT NULL DEFAULT 0,
+        max_players INTEGER NOT NULL DEFAULT 8,
+        status TEXT NOT NULL DEFAULT 'registration',
+        bracket JSONB,
+        current_round INTEGER NOT NULL DEFAULT 0,
+        total_rounds INTEGER NOT NULL DEFAULT 0,
+        winner TEXT,
+        prize_pool INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        start_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS tournament_players (
+        tournament_id TEXT NOT NULL REFERENCES tournaments(id),
+        address TEXT NOT NULL,
+        seed INTEGER,
+        eliminated_round INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tournament_id, address)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tournaments_status ON tournaments(status);
+      CREATE INDEX IF NOT EXISTS idx_tournament_players_address ON tournament_players(address);
       CREATE INDEX IF NOT EXISTS idx_match_results_address ON match_results(address);
       CREATE INDEX IF NOT EXISTS idx_match_results_created ON match_results(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_friendships_b ON friendships(player_b);
