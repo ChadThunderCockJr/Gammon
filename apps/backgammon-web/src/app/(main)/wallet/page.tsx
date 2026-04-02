@@ -27,7 +27,13 @@ export default function WalletPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ redirect_uri: window.location.href }),
       });
-      if (!res.ok) throw new Error("Failed to create Plaid link");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (err.error === "Brale not configured") {
+          throw new Error("Bank deposits are not yet available. Coming soon.");
+        }
+        throw new Error(err.error || "Could not connect to payment provider. Please try again later.");
+      }
       const { linkToken } = await res.json();
 
       // Open Plaid Link in a new window with the link token
