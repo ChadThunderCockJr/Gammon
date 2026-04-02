@@ -349,8 +349,6 @@ export class GameManager {
       game.gameState.movesRemaining
     );
 
-    const drandFailed = !drandProof;
-
     // Start turn timer — player must always confirm, even with no legal moves
     this.startTurnTimer(game);
 

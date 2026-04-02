@@ -127,31 +127,6 @@ app.get("/api/online-count", async (_req, res) => {
   res.json({ count });
 });
 
-// Tournament endpoints
-import { TournamentManager } from "./tournament.js";
-const tournamentManager = new TournamentManager(balanceService);
-
-app.get("/api/tournaments", async (_req, res) => {
-  const tournaments = await tournamentManager.getUpcoming();
-  res.json({ tournaments });
-});
-
-app.post("/api/tournaments", async (req, res) => {
-  const { name, entryFee, maxPlayers, startAt } = req.body;
-  if (!name || !startAt) { res.status(400).json({ error: "Missing name or startAt" }); return; }
-  const id = await tournamentManager.createTournament(name, entryFee || 0, maxPlayers || 8, startAt);
-  if (!id) { res.status(500).json({ error: "Failed to create tournament" }); return; }
-  res.json({ id });
-});
-
-app.post("/api/tournaments/:id/register", async (req, res) => {
-  const { address } = req.body;
-  if (!address) { res.status(400).json({ error: "Missing address" }); return; }
-  const result = await tournamentManager.registerPlayer(req.params.id, address);
-  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
-  res.json({ ok: true });
-});
-
 // Custodial balance query
 app.get("/api/balance/:address", async (req, res) => {
   try {
@@ -211,6 +186,31 @@ logger.info(`Balance service: ${process.env.DATABASE_URL ? "custodial" : "escrow
 const gameManager = new GameManager(balanceService);
 const matchmaker = new Matchmaker(gameManager);
 const matchManager = new MatchManager();
+
+// Tournament endpoints
+import { TournamentManager } from "./tournament.js";
+const tournamentManager = new TournamentManager(balanceService);
+
+app.get("/api/tournaments", async (_req, res) => {
+  const tournaments = await tournamentManager.getUpcoming();
+  res.json({ tournaments });
+});
+
+app.post("/api/tournaments", express.json(), async (req, res) => {
+  const { name, entryFee, maxPlayers, startAt } = req.body;
+  if (!name || !startAt) { res.status(400).json({ error: "Missing name or startAt" }); return; }
+  const id = await tournamentManager.createTournament(name, entryFee || 0, maxPlayers || 8, startAt);
+  if (!id) { res.status(500).json({ error: "Failed to create tournament" }); return; }
+  res.json({ id });
+});
+
+app.post("/api/tournaments/:id/register", express.json(), async (req, res) => {
+  const { address } = req.body;
+  if (!address) { res.status(400).json({ error: "Missing address" }); return; }
+  const result = await tournamentManager.registerPlayer(req.params.id, address);
+  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+  res.json({ ok: true });
+});
 
 // Track authenticated connections
 const connections = new Map<WebSocket, { address: string; rating: number }>();
