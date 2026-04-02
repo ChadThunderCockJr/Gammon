@@ -1,4 +1,4 @@
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { GameDiceHistory, createDiceProof, type DrandDiceProof } from "./dice.js";
 import { latestBeacon } from "./drand.js";
 import { DEFAULT_TURN_TIME_LIMIT_SEC, DOUBLE_DEPOSIT_TIMEOUT_MS, STALLING_MIN_MOVES, STALLING_THRESHOLD_PCTG, DISCONNECT_GRACE_SEC, DISCONNECT_GRACE_DOUBLE_SEC, DISCONNECT_CHECK_INTERVAL_MS } from "./config.js";
@@ -128,18 +128,12 @@ export class GameManager {
     }
   }
 
-  private generateShortId(): string {
-    // Generate a 4-digit numeric code, retry on collision
-    for (let i = 0; i < 100; i++) {
-      const id = String(randomInt(1000, 10000));
-      if (!this.games.has(id)) return id;
-    }
-    // Fallback: append timestamp fragment
-    return String(randomInt(1000, 10000)) + String(Date.now() % 1000);
+  private generateGameId(): string {
+    return randomUUID();
   }
 
   createGame(wagerAmount: number, turnTimeLimit: number = DEFAULT_TURN_TIME_LIMIT_SEC): ServerGame {
-    const id = this.generateShortId();
+    const id = this.generateGameId();
     const game: ServerGame = {
       id,
       gameState: createGameState(),
