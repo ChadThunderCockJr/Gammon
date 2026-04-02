@@ -159,6 +159,13 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_PAYLOA
 // Initialize Redis
 getRedis();
 
+// Initialize PostgreSQL (non-blocking — falls back to Redis if unavailable)
+import { initDatabase } from "./db.js";
+initDatabase().then((ok) => {
+  if (ok) logger.info("PostgreSQL connected");
+  else logger.warn("PostgreSQL not available — using Redis-only persistence");
+});
+
 const balanceService = new EscrowBalanceService();
 const gameManager = new GameManager(balanceService);
 const matchmaker = new Matchmaker(gameManager);

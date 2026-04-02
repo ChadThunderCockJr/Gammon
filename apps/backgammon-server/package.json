@@ -22,6 +22,7 @@
     "drand-client": "^1.4.2",
     "express": "^4.21.0",
     "ioredis": "^5.4.0",
+    "pg": "^8.20.0",
     "uuid": "^11.0.0",
     "ws": "^8.18.0"
   },
@@ -29,6 +30,7 @@
     "@types/cors": "^2.8.0",
     "@types/express": "^5.0.0",
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
     "tsx": "^4.19.0",
