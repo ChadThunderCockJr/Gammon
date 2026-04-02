@@ -100,9 +100,7 @@ export default function RootLayout({
         <meta property="og:image:alt" content="Gammon — The world's fairest backgammon platform" />
         <meta name="twitter:card" content="summary" />
         <meta name="twitter:image" content={`${SITE_URL}/logo.png`} />
-        {/* Preload GNUBG WASM so AI games start fast */}
-        <link rel="preload" href="/gnubg/gbweb.1.wasm" as="fetch" crossOrigin="anonymous" />
-        <link rel="preload" href="/gnubg/wasm_exec.js" as="script" />
+        {/* GNUBG WASM is lazy-loaded on game pages only (via gnubg.ts ensureWorker) */}
         {/* Inline script to set theme class before first paint — prevents flash */}
         <script
           dangerouslySetInnerHTML={{
