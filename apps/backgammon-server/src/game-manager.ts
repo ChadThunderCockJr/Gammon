@@ -186,11 +186,11 @@ export class GameManager {
     return null;
   }
 
-  async rollDiceLocked(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string } } | null> {
+  async rollDiceLocked(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
     return this.withGameLock(gameId, () => this.rollDice(gameId, playerAddress));
   }
 
-  async rollDice(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string } } | null> {
+  async rollDice(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
     const game = this.games.get(gameId);
     if (!game || game.status !== "playing") return null;
     if (game.gameState.dice !== null) return null; // already rolled
@@ -221,11 +221,15 @@ export class GameManager {
       if (diceHistory) {
         diceHistory.addProof(proof);
       }
-    } catch {
-      // Fallback to random if drand is unreachable
+    } catch (err) {
+      // Fallback to CSPRNG if drand is unreachable — flag as unverifiable
+      console.warn("[Dice] drand unavailable, falling back to CSPRNG:", err);
       die1 = randomInt(1, 7);
       die2 = randomInt(1, 7);
+      drandProof = undefined;
     }
+
+    const drandFailed = !drandProof;
 
     game.gameState = setDice(game.gameState, die1, die2);
 
@@ -240,7 +244,7 @@ export class GameManager {
 
     void this.persistGame(game);
 
-    return { dice: [die1, die2], gameState: game.gameState, legalMoves, drandProof };
+    return { dice: [die1, die2], gameState: game.gameState, legalMoves, drandProof, drandFailed };
   }
 
   async applyMoveLocked(gameId: string, playerAddress: string, from: number, to: number): Promise<{ move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null> {

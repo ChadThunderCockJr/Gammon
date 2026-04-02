@@ -608,6 +608,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           legal_moves: result.legalMoves,
           needs_confirmation: result.legalMoves.length === 0,
           drand_proof: result.drandProof,
+          drand_failed: result.drandFailed,
         });
         gameManager.sendToPlayer(opponentPlayer, {
           type: "dice_rolled",
@@ -617,6 +618,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           game_state: result.gameState,
           legal_moves: [],
           drand_proof: result.drandProof,
+          drand_failed: result.drandFailed,
         });
         for (const spec of game.spectators) {
           gameManager.sendToPlayer(spec, {
