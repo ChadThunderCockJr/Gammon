@@ -215,7 +215,7 @@ export default function GameAuditPage() {
                 return (
                   <tr
                     key={proof.turnNumber}
-                    style={{ borderBottom: "1px solid rgba(42,48,38,0.3)" }}
+                    style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
                   >
                     <td style={{ padding: "8px 8px", color: "var(--color-text-secondary)" }}>
                       {proof.turnNumber}

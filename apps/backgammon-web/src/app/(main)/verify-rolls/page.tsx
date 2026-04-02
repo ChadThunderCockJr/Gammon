@@ -44,8 +44,8 @@ function ChevronIcon({ open }: { open: boolean }) {
 function CheckIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="7" fill="#22c55e" opacity="0.15" />
-      <path d="M5 8l2 2 4-4" stroke="#22c55e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="7" fill="var(--color-success)" opacity="0.15" />
+      <path d="M5 8l2 2 4-4" stroke="var(--color-success)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -53,8 +53,8 @@ function CheckIcon() {
 function CrossIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="7" fill="#ef4444" opacity="0.15" />
-      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="8" cy="8" r="7" fill="var(--color-danger)" opacity="0.15" />
+      <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="var(--color-danger)" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }
