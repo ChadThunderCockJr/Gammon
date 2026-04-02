@@ -793,7 +793,7 @@ export default function DashboardPage() {
           {/* Wallet */}
           {!isNativeApp && (
           <div
-            onClick={() => router.push("/buy-tokens")}
+            onClick={() => router.push("/wallet")}
             style={{
               display: "flex",
               alignItems: "center",
