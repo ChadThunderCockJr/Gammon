@@ -26,7 +26,7 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 /** Derive dice from drand randomness + game context (mirrors server logic) */
-async function deriveDice(
+export async function deriveDice(
   drandRandomness: string,
   playerWhite: string,
   playerBlack: string,
