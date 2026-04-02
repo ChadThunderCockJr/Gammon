@@ -27,8 +27,9 @@ export function useBalance() {
       const data = await res.json();
       // Convert from raw units to display format (6 decimal places for USDC)
       const raw = BigInt(data.balance || "0");
-      const whole = raw / 1_000_000n;
-      const frac = raw % 1_000_000n;
+      const divisor = BigInt(1_000_000);
+      const whole = raw / divisor;
+      const frac = raw % divisor;
       const formatted = `${whole}.${frac.toString().padStart(6, "0").slice(0, 2)}`;
       setBalance(formatted);
     } catch (err) {
