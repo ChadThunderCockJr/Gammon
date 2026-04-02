@@ -277,9 +277,9 @@ html.light ::-webkit-scrollbar-thumb:hover {
 
 body {
   /* Override font vars here (not in @theme/:root) so Next.js
-     font-class variables (--font-cormorant etc.) are in scope */
-  --font-display: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
-  --font-body: var(--font-outfit), "Outfit", system-ui, -apple-system, sans-serif;
+     font-class variables (--font-cinzel etc.) are in scope */
+  --font-display: var(--font-cinzel), "Cinzel", Georgia, serif;
+  --font-body: var(--font-josefin), "Josefin Sans", system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-jetbrains), "JetBrains Mono", ui-monospace, monospace;
   font-family: var(--font-body);
   line-height: 1.5;
