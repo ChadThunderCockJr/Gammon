@@ -64,6 +64,11 @@ async function braleRequest(method: string, path: string, body?: object, idempot
   };
   if (idempotencyKey) hdrs["Idempotency-Key"] = idempotencyKey;
 
+  // Brale requires Idempotency-Key on all POST requests
+  if (method === "POST" && !idempotencyKey) {
+    hdrs["Idempotency-Key"] = `${path}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
   const url = `${BRALE_BASE_URL}${path}`;
   const res = await fetch(url, {
     method,
