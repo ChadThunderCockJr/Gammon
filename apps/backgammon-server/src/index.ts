@@ -6,6 +6,8 @@ import cors from "cors";
 import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_MESSAGES, WS_MAX_PAYLOAD_BYTES, INTER_GAME_DELAY_MS, ONLINE_CLEANUP_INTERVAL_MS } from "./config.js";
 import { GameManager } from "./game-manager.js";
 import { EscrowBalanceService } from "./escrow-balance-service.js";
+import { CustodialBalanceService } from "./custodial-balance-service.js";
+import type { BalanceService } from "./balance-service.js";
 import { Matchmaker } from "./matchmaking.js";
 import { MatchManager } from "./match-manager.js";
 import { SocialManager } from "./social-manager.js";
@@ -166,7 +168,11 @@ initDatabase().then((ok) => {
   else logger.warn("PostgreSQL not available — using Redis-only persistence");
 });
 
-const balanceService = new EscrowBalanceService();
+// Balance service: custodial (PostgreSQL ledger) when DATABASE_URL is set, escrow (on-chain) otherwise
+const balanceService: BalanceService = process.env.DATABASE_URL
+  ? new CustodialBalanceService()
+  : new EscrowBalanceService();
+logger.info(`Balance service: ${process.env.DATABASE_URL ? "custodial" : "escrow"}`);
 const gameManager = new GameManager(balanceService);
 const matchmaker = new Matchmaker(gameManager);
 const matchManager = new MatchManager();
