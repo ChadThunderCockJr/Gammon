@@ -17,7 +17,7 @@ import {
   type Move,
   type ResultType,
 } from "@xion-beginner/backgammon-core";
-import { getEscrowClient } from "./escrow.js";
+import type { BalanceService } from "./balance-service.js";
 import type { ServerGame, PlayerConnection, ServerMessage } from "./types.js";
 
 export class GameManager {
@@ -25,6 +25,11 @@ export class GameManager {
   private playerGames = new Map<string, string>(); // address -> gameId
   private diceHistories = new Map<string, GameDiceHistory>();
   private gameLocks = new Map<string, Promise<void>>();
+  private balanceService: BalanceService | null;
+
+  constructor(balanceService?: BalanceService) {
+    this.balanceService = balanceService ?? null;
+  }
 
   private async withGameLock<T>(gameId: string, fn: () => T | Promise<T>): Promise<T> {
     const prev = this.gameLocks.get(gameId) ?? Promise.resolve();
@@ -466,11 +471,10 @@ export class GameManager {
 
     if (!doublerAddress) return null;
 
-    // Call escrow contract to transition to AwaitingDoubleDeposits
-    const escrow = getEscrowClient();
-    if (!escrow) return null;
+    // Transition to AwaitingDoubleDeposits via balance service
+    if (!this.balanceService) return null;
 
-    const success = await escrow.offerDouble(gameId, doublerAddress, newCubeValue);
+    const success = await this.balanceService.offerDouble(gameId, doublerAddress, newCubeValue);
     if (!success) return null;
 
     // Calculate additional deposit: old_cube * wager
@@ -510,16 +514,15 @@ export class GameManager {
     const pending = game.pendingDoubleDeposit;
     if (playerAddress !== pending.doubler && playerAddress !== pending.responder) return null;
 
-    // Query on-chain escrow to verify the deposit
-    const escrow = getEscrowClient();
-    if (!escrow) return null;
+    // Verify deposit via balance service
+    if (!this.balanceService) return null;
 
-    const info = await escrow.queryEscrowStatus(gameId);
-    if (!info || !info.pendingDouble) return null;
+    const depositStatus = await this.balanceService.verifyDoubleDeposit(gameId);
+    if (!depositStatus) return null;
 
-    // Update our tracking based on on-chain state
-    pending.doublerDeposited = info.pendingDouble.doublerDeposited;
-    pending.responderDeposited = info.pendingDouble.responderDeposited;
+    // Update our tracking based on balance service state
+    pending.doublerDeposited = depositStatus.doublerDeposited;
+    pending.responderDeposited = depositStatus.responderDeposited;
 
     const depositsComplete = pending.doublerDeposited && pending.responderDeposited;
 
@@ -564,10 +567,9 @@ export class GameManager {
     const game = this.games.get(gameId);
     if (!game || !game.pendingDoubleDeposit) return;
 
-    // Cancel the escrow double on-chain (refunds happen in contract)
-    const escrow = getEscrowClient();
-    if (escrow) {
-      await escrow.cancel(gameId);
+    // Cancel the pending double via balance service (refunds happen automatically)
+    if (this.balanceService) {
+      await this.balanceService.cancelFunds(gameId);
     }
 
     this.clearDoubleDepositTimer(game);
@@ -610,10 +612,9 @@ export class GameManager {
     const playerColor = this.getPlayerColor(game, playerAddress);
     if (!playerColor) return null;
 
-    // Settle escrow: rejecter forfeits, doubler gets pot
-    const escrow = getEscrowClient();
-    if (escrow) {
-      await escrow.rejectDouble(gameId, playerAddress);
+    // Reject double via balance service: rejecter forfeits, doubler gets pot
+    if (this.balanceService) {
+      await this.balanceService.rejectDouble(gameId, playerAddress);
     }
 
     const result = rejectDouble(game.gameState, playerColor);
@@ -681,36 +682,33 @@ export class GameManager {
     return true;
   }
 
-  // ── Escrow Integration ────────────────────────────────────────
+  // ── Balance Service Integration ────────────────────────────────
 
-  async createEscrowForGame(gameId: string, playerA: string, playerB: string, wagerAmount: number): Promise<boolean> {
-    const escrow = getEscrowClient();
-    if (!escrow) return false;
+  async lockFundsForGame(gameId: string, playerA: string, playerB: string, wagerAmount: number): Promise<boolean> {
+    if (!this.balanceService) return false;
     const game = this.games.get(gameId);
     if (!game) return false;
 
-    const [balA, balB] = await Promise.all([
-      escrow.queryBalance(playerA),
-      escrow.queryBalance(playerB),
+    const [hasA, hasB] = await Promise.all([
+      this.balanceService.checkBalance(playerA, wagerAmount),
+      this.balanceService.checkBalance(playerB, wagerAmount),
     ]);
-    if (parseInt(balA) < wagerAmount || parseInt(balB) < wagerAmount) return false;
+    if (!hasA || !hasB) return false;
 
-    const created = await escrow.createEscrow(gameId, playerA, playerB, String(wagerAmount));
-    if (created) {
+    const locked = await this.balanceService.lockFunds(gameId, playerA, playerB, wagerAmount);
+    if (locked) {
       game.escrowStatus = "pending_deposits";
       void this.persistGame(game);
     }
-    return created;
+    return locked;
   }
 
-  async settleEscrow(gameId: string, winner: string, _resultType: ResultType): Promise<boolean> {
-    const escrow = getEscrowClient();
-    if (!escrow) return false;
+  async settleFunds(gameId: string, winner: string, resultType: ResultType): Promise<boolean> {
+    if (!this.balanceService) return false;
     const game = this.games.get(gameId);
     if (!game || game.escrowStatus !== "active") return false;
 
-    // Contract now uses actual deposited amounts (cube-aware), no multiplier needed
-    const settled = await escrow.settle(gameId, winner);
+    const settled = await this.balanceService.settleFunds(gameId, winner, resultType);
     if (settled) game.escrowStatus = "settled";
     return settled;
   }

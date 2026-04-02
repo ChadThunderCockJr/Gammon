@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import cors from "cors";
 import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_MESSAGES, WS_MAX_PAYLOAD_BYTES, INTER_GAME_DELAY_MS, ONLINE_CLEANUP_INTERVAL_MS } from "./config.js";
 import { GameManager } from "./game-manager.js";
+import { EscrowBalanceService } from "./escrow-balance-service.js";
 import { Matchmaker } from "./matchmaking.js";
 import { MatchManager } from "./match-manager.js";
 import { SocialManager } from "./social-manager.js";
@@ -158,7 +159,8 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_PAYLOA
 // Initialize Redis
 getRedis();
 
-const gameManager = new GameManager();
+const balanceService = new EscrowBalanceService();
+const gameManager = new GameManager(balanceService);
 const matchmaker = new Matchmaker(gameManager);
 const matchManager = new MatchManager();
 
