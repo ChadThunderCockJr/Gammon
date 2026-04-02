@@ -116,10 +116,3 @@ export async function verifySignature(
   }
 }
 
-/**
- * Simple fallback for development: trust the address without verification.
- * Used when SKIP_AUTH_VERIFICATION env var is set.
- */
-export function isAuthSkipped(): boolean {
-  return process.env.SKIP_AUTH_VERIFICATION === "true";
-}

@@ -339,19 +339,17 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
     case "auth": {
       // Allow multiple connections per address (game + social use separate WebSockets)
 
-      // Verify wallet signature (skip in dev mode)
-      const { verifySignature, isAuthSkipped } = await import("./auth.js");
-      if (!isAuthSkipped()) {
-        if (!msg.signature || !msg.pubkey || !msg.nonce) {
-          send(ws, { type: "error", message: "Missing signature, pubkey, or nonce" });
-          return;
-        }
-        const valid = await verifySignature(msg.address, msg.nonce, msg.signature, msg.pubkey, msg.signer_address);
-        if (!valid) {
-          send(ws, { type: "error", message: "Invalid signature" });
-          ws.close(1008, "Authentication failed");
-          return;
-        }
+      // Verify wallet signature
+      const { verifySignature } = await import("./auth.js");
+      if (!msg.signature || !msg.pubkey || !msg.nonce) {
+        send(ws, { type: "error", message: "Missing signature, pubkey, or nonce" });
+        return;
+      }
+      const valid = await verifySignature(msg.address, msg.nonce, msg.signature, msg.pubkey, msg.signer_address);
+      if (!valid) {
+        send(ws, { type: "error", message: "Invalid signature" });
+        ws.close(1008, "Authentication failed");
+        return;
       }
 
       const ratingInfo = await socialStore.getRating(msg.address);
@@ -610,6 +608,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           legal_moves: result.legalMoves,
           needs_confirmation: result.legalMoves.length === 0,
           drand_proof: result.drandProof,
+          drand_failed: result.drandFailed,
         });
         gameManager.sendToPlayer(opponentPlayer, {
           type: "dice_rolled",
@@ -619,6 +618,7 @@ async function handleMessage(ws: WebSocket, msg: ClientMessage): Promise<void> {
           game_state: result.gameState,
           legal_moves: [],
           drand_proof: result.drandProof,
+          drand_failed: result.drandFailed,
         });
         for (const spec of game.spectators) {
           gameManager.sendToPlayer(spec, {
