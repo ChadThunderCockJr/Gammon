@@ -127,6 +127,85 @@ app.get("/api/online-count", async (_req, res) => {
   res.json({ count });
 });
 
+// ── Brale ACH on/off ramp ────────────────────────────────
+import * as brale from "./brale.js";
+
+// Get Plaid link token (user initiates bank connection)
+app.post("/api/brale/plaid-link", express.json(), async (req, res) => {
+  if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  try {
+    const accountId = await brale.getAccountId();
+    const { linkToken } = await brale.createPlaidLinkToken(accountId, req.body.redirect_uri);
+    res.json({ linkToken });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create Plaid link token" });
+  }
+});
+
+// Register bank account after Plaid Link completes
+app.post("/api/brale/register-bank", express.json(), async (req, res) => {
+  if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  const { publicToken } = req.body;
+  if (!publicToken) { res.status(400).json({ error: "Missing publicToken" }); return; }
+  try {
+    const accountId = await brale.getAccountId();
+    const { addressId } = await brale.registerPlaidAccount(accountId, publicToken);
+    res.json({ addressId });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to register bank account" });
+  }
+});
+
+// Deposit: ACH debit from bank → stablecoins on XION
+app.post("/api/brale/deposit", express.json(), async (req, res) => {
+  if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  const { bankAddressId, walletAddress, amount } = req.body;
+  if (!bankAddressId || !walletAddress || !amount) {
+    res.status(400).json({ error: "Missing bankAddressId, walletAddress, or amount" }); return;
+  }
+  try {
+    const accountId = await brale.getAccountId();
+    // Register the user's XION wallet if not already registered
+    const { addressId: walletAddressId } = await brale.registerWalletAddress(accountId, walletAddress);
+    const idempotencyKey = `deposit-${walletAddress}-${Date.now()}`;
+    const transfer = await brale.createOnrampTransfer(accountId, bankAddressId, walletAddressId, amount, idempotencyKey);
+    res.json(transfer);
+  } catch (err) {
+    res.status(500).json({ error: "Deposit failed" });
+  }
+});
+
+// Withdraw: stablecoins → ACH credit to bank
+app.post("/api/brale/withdraw", express.json(), async (req, res) => {
+  if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  const { bankAddressId, amount, sameDay } = req.body;
+  if (!bankAddressId || !amount) {
+    res.status(400).json({ error: "Missing bankAddressId or amount" }); return;
+  }
+  try {
+    const accountId = await brale.getAccountId();
+    const custodial = await brale.getCustodialAddress(accountId);
+    if (!custodial) { res.status(500).json({ error: "No custodial address found" }); return; }
+    const idempotencyKey = `withdraw-${bankAddressId}-${Date.now()}`;
+    const transfer = await brale.createOfframpTransfer(accountId, custodial.addressId, bankAddressId, amount, idempotencyKey, sameDay);
+    res.json(transfer);
+  } catch (err) {
+    res.status(500).json({ error: "Withdrawal failed" });
+  }
+});
+
+// Check transfer status
+app.get("/api/brale/transfer/:transferId", async (req, res) => {
+  if (!brale.isBraleConfigured()) { res.status(503).json({ error: "Brale not configured" }); return; }
+  try {
+    const accountId = await brale.getAccountId();
+    const status = await brale.getTransferStatus(accountId, req.params.transferId);
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to check transfer status" });
+  }
+});
+
 // Custodial balance query
 app.get("/api/balance/:address", async (req, res) => {
   try {
