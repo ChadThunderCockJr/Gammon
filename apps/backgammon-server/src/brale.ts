@@ -88,9 +88,17 @@ async function braleRequest(method: string, path: string, body?: object, idempot
 // ── Account ──────────────────────────────────────────────
 
 export async function getAccountId(): Promise<string> {
-  if (BRALE_ACCOUNT_ID) return BRALE_ACCOUNT_ID;
-  const data = await braleRequest("GET", "/accounts");
-  return data.data?.[0]?.id || "";
+  // Always fetch from API to get the correct account ID
+  try {
+    const data = await braleRequest("GET", "/accounts");
+    const id = data.data?.[0]?.id || BRALE_ACCOUNT_ID;
+    if (id !== BRALE_ACCOUNT_ID && BRALE_ACCOUNT_ID) {
+      logger.warn("Brale account ID mismatch", { env: BRALE_ACCOUNT_ID, api: id });
+    }
+    return id;
+  } catch {
+    return BRALE_ACCOUNT_ID;
+  }
 }
 
 // ── Plaid Link (for ACH Debit onramp) ───────────────────
