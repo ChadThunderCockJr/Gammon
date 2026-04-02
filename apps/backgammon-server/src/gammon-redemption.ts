@@ -248,11 +248,26 @@ async function pollForRedemptions(config: RedemptionConfig): Promise<void> {
 
       logger.info("Processing pack redemption", { tokenId, sender, packAmount });
 
-      // Mint Gammon tokens to the sender
-      const success = await mintGammonTokens(config, sender, packAmount);
+      // Credit balance: custodial (PostgreSQL) if available, else on-chain mint
+      let success = false;
+      if (process.env.DATABASE_URL) {
+        // Custodial mode: credit the player's balance directly
+        try {
+          const { CustodialBalanceService } = await import("./custodial-balance-service.js");
+          const custodial = new CustodialBalanceService();
+          success = await custodial.creditBalance(sender, BigInt(packAmount * 1_000_000), `NFT pack redeemed: ${tokenId}`);
+        } catch (err) {
+          logger.error("Custodial credit failed, falling back to on-chain mint", { error: String(err) });
+          success = await mintGammonTokens(config, sender, packAmount);
+        }
+      } else {
+        // On-chain mode: mint Gammon tokens
+        success = await mintGammonTokens(config, sender, packAmount);
+      }
+
       if (success) {
         await markProcessed(tokenId, sender, packAmount);
-        logger.info("Pack redeemed successfully", { tokenId, sender, packAmount });
+        logger.info("Pack redeemed successfully", { tokenId, sender, packAmount, mode: process.env.DATABASE_URL ? "custodial" : "on-chain" });
       }
     }
   } catch (err) {
