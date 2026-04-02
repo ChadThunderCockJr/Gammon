@@ -92,7 +92,7 @@ export async function getAccountId(): Promise<string> {
   try {
     const data = await braleRequest("GET", "/accounts");
     logger.info("Brale accounts response", { data: JSON.stringify(data) });
-    const id = data.data?.[0]?.id || BRALE_ACCOUNT_ID;
+    const id = data.accounts?.[0]?.id || data.data?.[0]?.id || BRALE_ACCOUNT_ID;
     if (id !== BRALE_ACCOUNT_ID && BRALE_ACCOUNT_ID) {
       logger.warn("Brale account ID mismatch", { env: BRALE_ACCOUNT_ID, api: id });
     }
