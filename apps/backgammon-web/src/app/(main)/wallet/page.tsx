@@ -30,17 +30,13 @@ export default function WalletPage() {
       if (!res.ok) throw new Error("Failed to create Plaid link");
       const { linkToken } = await res.json();
 
-      // Load Plaid Link SDK dynamically
-      const Plaid = await import("react-plaid-link").catch(() => null);
-      if (!Plaid) {
-        // Fallback: open Plaid in a new window (for environments without the SDK)
-        window.open(`https://cdn.plaid.com/link/v2/stable/link.html?token=${linkToken}`, "_blank");
-        setStep("amount");
-        return;
-      }
-
-      // The Plaid Link component will be handled by the UI below
-      // For now, store the link token and move to amount step
+      // Open Plaid Link in a new window with the link token
+      // Plaid Link will redirect back after bank connection
+      window.open(
+        `https://cdn.plaid.com/link/v2/stable/link.html?isWebview=true&token=${linkToken}`,
+        "plaid-link",
+        "width=400,height=600",
+      );
       setStep("amount");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect bank");
