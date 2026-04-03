@@ -75,6 +75,7 @@ const abstraxionConfig = {
   authentication: {
     type: 'redirect' as const,
     callbackUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
+    autoMode: true,
   },
 };
 
