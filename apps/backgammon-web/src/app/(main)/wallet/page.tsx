@@ -27,7 +27,7 @@ export default function WalletPage() {
     setStep("linking");
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/brale/plaid-link`, {
+      const res = await fetch(`/api/plaid-link`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
