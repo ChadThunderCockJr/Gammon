@@ -108,23 +108,53 @@ export async function getAccountId(): Promise<string> {
   }
 }
 
-// ── Plaid Link (for ACH Debit onramp) ───────────────────
+// ── Plaid Link (direct Plaid API, not via Brale) ────────
 
-/** Create a Plaid link token for the user to connect their bank account */
+const PLAID_CLIENT_ID = process.env.PLAID_CLIENT_ID || "";
+const PLAID_SECRET = process.env.PLAID_SECRET || "";
+const PLAID_ENV = process.env.PLAID_ENV || "sandbox"; // sandbox | production
+const PLAID_BASE_URL = PLAID_ENV === "production"
+  ? "https://production.plaid.com"
+  : "https://sandbox.plaid.com";
+
+/** Create a Plaid link token directly via Plaid API */
 export async function createPlaidLinkToken(
-  accountId: string,
+  _accountId: string,
   userInfo: { legalName: string; email: string; phone?: string; dob?: string },
   redirectUri?: string,
 ): Promise<{ linkToken: string }> {
-  const body: any = {
-    legal_name: userInfo.legalName,
-    email_address: userInfo.email,
-  };
-  if (userInfo.phone) body.phone_number = userInfo.phone;
-  if (userInfo.dob) body.date_of_birth = userInfo.dob;
-  if (redirectUri) body.redirect_uri = redirectUri;
+  if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
+    throw new Error("Plaid not configured");
+  }
 
-  const data = await braleRequest("POST", `/accounts/${accountId}/plaid/link_token`, body);
+  const body: any = {
+    client_id: PLAID_CLIENT_ID,
+    secret: PLAID_SECRET,
+    client_name: "Gammon",
+    language: "en",
+    country_codes: ["US"],
+    user: {
+      client_user_id: userInfo.email,
+      legal_name: userInfo.legalName,
+      email_address: userInfo.email,
+    },
+    products: ["auth"],
+  };
+  if (redirectUri) body.redirect_uris = [redirectUri];
+
+  const res = await fetch(`${PLAID_BASE_URL}/link/token/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    logger.error("Plaid link token error", { status: res.status, body: text });
+    throw new Error(`Plaid API ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
   return { linkToken: data.link_token };
 }
 
@@ -260,5 +290,5 @@ export async function getTransferStatus(accountId: string, transferId: string): 
 // ── Config check ─────────────────────────────────────────
 
 export function isBraleConfigured(): boolean {
-  return !!(BRALE_CLIENT_SECRET && BRALE_ACCOUNT_ID);
+  return !!(BRALE_CLIENT_SECRET && BRALE_ACCOUNT_ID) || !!(PLAID_CLIENT_ID && PLAID_SECRET);
 }
