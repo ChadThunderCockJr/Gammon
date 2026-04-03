@@ -52,7 +52,9 @@ export default function WalletPage() {
       );
       setStep("amount");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to connect bank");
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Wallet] Plaid link error:", msg, "API_BASE:", API_BASE);
+      setError(`${msg} (API: ${API_BASE})`);
       setStep("error");
     }
   }, [userInfo]);
