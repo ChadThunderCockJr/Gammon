@@ -72,10 +72,11 @@ const abstraxionConfig = {
         ],
       }
     : {}),
+  rpcUrl: process.env.NEXT_PUBLIC_RPC || "https://rpc.xion-testnet-2.burnt.com:443",
+  restUrl: process.env.NEXT_PUBLIC_REST || "https://api.xion-testnet-2.burnt.com",
   authentication: {
-    type: 'redirect' as const,
-    callbackUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
-    autoMode: true,
+    type: "auto" as const,
+    authAppUrl: process.env.NEXT_PUBLIC_AUTH_APP_URL,
   },
 };
 
