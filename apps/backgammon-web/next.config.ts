@@ -30,7 +30,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "font-src 'self' data: https://*.crossmint.com https://dynamic-static-assets.com",
-              "connect-src 'self' https://*.burnt.com https://*.vercel.com https://*.vercel-storage.com ws://localhost:* wss://*.railway.app wss://*.gammon.nyc wss://api.gammon.nyc https://*.gammon.nyc https://api.gammon.nyc https://*.crossmint.com https://dynamic-static-assets.com",
+              "connect-src 'self' https://*.burnt.com https://*.vercel.com https://*.vercel-storage.com ws://localhost:* wss://*.railway.app wss://*.gammon.nyc wss://api.gammon.nyc https://*.gammon.nyc https://api.gammon.nyc https://*.crossmint.com https://dynamic-static-assets.com https://gammon-server.fly.dev wss://gammon-server.fly.dev https://*.plaid.com https://cdn.plaid.com https://rpc.xion-testnet-2.burnt.com",
               "frame-src 'self' https://*.burnt.com https://*.crossmint.com",
               "form-action 'self'",
               "base-uri 'self'",
