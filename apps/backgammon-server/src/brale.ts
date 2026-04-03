@@ -134,7 +134,7 @@ export async function createPlaidLinkToken(
     language: "en",
     country_codes: ["US"],
     user: {
-      client_user_id: userInfo.email,
+      client_user_id: `user_${Buffer.from(userInfo.email).toString("base64url").slice(0, 20)}`,
       legal_name: userInfo.legalName,
       email_address: userInfo.email,
     },
