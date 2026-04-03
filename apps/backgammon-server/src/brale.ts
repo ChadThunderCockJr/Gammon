@@ -140,7 +140,8 @@ export async function createPlaidLinkToken(
     },
     products: ["auth"],
   };
-  if (redirectUri) body.redirect_uris = [redirectUri];
+  // redirect_uri is optional and must be registered in Plaid dashboard first
+  // if (redirectUri) body.redirect_uri = redirectUri;
 
   const res = await fetch(`${PLAID_BASE_URL}/link/token/create`, {
     method: "POST",
