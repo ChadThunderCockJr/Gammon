@@ -1,6 +1,7 @@
 import { WS_URL } from "./ws-config";
 
-export const API_BASE = WS_URL.replace(/^ws(s?):/, "http$1:").replace(/\/ws$/, "");
+// Derive HTTP API base from WebSocket URL, trimming /ws path and any whitespace
+export const API_BASE = WS_URL.trim().replace(/^ws(s?):/, "http$1:").replace(/\/ws\s*$/, "").replace(/\/+$/, "");
 
 // ── Types ──────────────────────────────────────────────────────
 
