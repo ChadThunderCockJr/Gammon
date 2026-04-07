@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "backgammon",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.burnt.backgammon",
