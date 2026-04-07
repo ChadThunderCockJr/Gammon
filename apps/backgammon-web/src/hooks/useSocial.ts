@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useAbstraxionSigningClient } from "@burnt-labs/abstraxion";
 import { useWebSocket } from "./useWebSocket";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -218,9 +219,16 @@ function socialReducer(state: SocialState, action: SocialAction): SocialState {
 
 export function useSocial(wsUrl: string, address: string | null) {
   const { connect, sendMessage, connected, on } = useWebSocket(wsUrl);
+  const { signArb, client: abstraxionClient } = useAbstraxionSigningClient();
   const [state, dispatch] = useReducer(socialReducer, initialState);
   const addressRef = useRef(address);
   addressRef.current = address;
+
+  // Auth challenge-response state
+  const [authNonce, setAuthNonce] = useState<string | null>(null);
+  const authSentRef = useRef(false);
+  const awaitingProfileRef = useRef(false);
+  const authTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connect when address is available
   useEffect(() => {
@@ -229,23 +237,73 @@ export function useSocial(wsUrl: string, address: string | null) {
     }
   }, [address, connect]);
 
-  // Track connected state
+  // Listen for auth_challenge from server
   useEffect(() => {
-    dispatch({ type: connected ? "CONNECTED" : "DISCONNECTED" });
-  }, [connected]);
+    const unsub = on("auth_challenge", (msg) => {
+      setAuthNonce(msg.nonce as string);
+      authSentRef.current = false;
+    });
+    return unsub;
+  }, [on]);
 
-  // Authenticate + fetch initial data
+  // Authenticate with wallet signature once nonce + signing are available
   useEffect(() => {
-    if (connected && address) {
-      sendMessage({ type: "auth", address });
-      // Small delay to ensure auth is processed
-      const t = setTimeout(() => {
-        sendMessage({ type: "get_friends" });
-        sendMessage({ type: "get_activity" });
-      }, 100);
-      return () => clearTimeout(t);
+    if (!connected || !address || !authNonce || authSentRef.current) return;
+    // Wait for signing client — effect re-runs when signArb becomes available
+    if (!signArb || !abstraxionClient) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const accountData = await abstraxionClient.getGranteeAccountData();
+        if (!accountData) throw new Error("No grantee account data available");
+        const signature = await signArb(accountData.address, authNonce);
+        const pubkey = btoa(String.fromCharCode(...accountData.pubkey));
+        if (!cancelled) {
+          sendMessage({
+            type: "auth",
+            address,
+            signature,
+            pubkey,
+            nonce: authNonce,
+            signer_address: accountData.address,
+          });
+          authSentRef.current = true;
+        }
+      } catch (err) {
+        console.error("[Social] Wallet signing failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connected, address, authNonce, signArb, abstraxionClient, sendMessage]);
+
+  // Handle auth_ok — fetch initial data, wait for profile before marking connected
+  useEffect(() => {
+    const unsub = on("auth_ok", () => {
+      awaitingProfileRef.current = true;
+      sendMessage({ type: "get_friends" });
+      sendMessage({ type: "get_activity" });
+      // Safety: if profile never arrives, dispatch CONNECTED after timeout
+      authTimeoutRef.current = setTimeout(() => {
+        if (awaitingProfileRef.current) {
+          awaitingProfileRef.current = false;
+          dispatch({ type: "CONNECTED" });
+        }
+      }, 5000);
+    });
+    return unsub;
+  }, [on, sendMessage]);
+
+  // Track disconnected state and reset auth
+  useEffect(() => {
+    if (!connected) {
+      dispatch({ type: "DISCONNECTED" });
+      setAuthNonce(null);
+      authSentRef.current = false;
+      awaitingProfileRef.current = false;
+      if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
     }
-  }, [connected, address, sendMessage]);
+  }, [connected]);
 
   // Register message handlers
   useEffect(() => {
@@ -265,12 +323,18 @@ export function useSocial(wsUrl: string, address: string | null) {
           items: (msg.items || []) as ActivityItem[],
         }),
       ),
-      on("profile_updated", (msg) =>
+      on("profile_updated", (msg) => {
         dispatch({
           type: "PROFILE_UPDATED",
           display_name: msg.display_name as string,
-        }),
-      ),
+        });
+        // After initial auth, server sends profile_updated last — mark connected now
+        if (awaitingProfileRef.current) {
+          awaitingProfileRef.current = false;
+          if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
+          dispatch({ type: "CONNECTED" });
+        }
+      }),
       on("friend_online", (msg) =>
         dispatch({ type: "FRIEND_ONLINE", address: msg.address as string }),
       ),

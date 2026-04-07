@@ -77,6 +77,7 @@ export async function verifySignature(
     const aminoMod: any = await import("@cosmjs/amino");
 
     const Secp256k1 = cryptoMod.Secp256k1 ?? cryptoMod.default?.Secp256k1;
+    const Secp256k1Signature = cryptoMod.Secp256k1Signature ?? cryptoMod.default?.Secp256k1Signature;
     const Sha256 = cryptoMod.Sha256 ?? cryptoMod.default?.Sha256;
     const serializeSignDoc = aminoMod.serializeSignDoc ?? aminoMod.default?.serializeSignDoc;
 
@@ -99,15 +100,14 @@ export async function verifySignature(
     // Hash the sign doc (Cosmos signs SHA-256 of the serialized doc)
     const messageHash = new Sha256(signBytes).digest();
 
-    // Verify the secp256k1 signature
-    // @cosmjs/crypto Secp256k1 expects a 64-byte signature (r + s, no recovery byte)
-    const sig = sigBytes.length === 65 ? sigBytes.slice(0, 64) : sigBytes;
+    // Extract raw r,s from signature (strip recovery byte if present)
+    const rawSig = sigBytes.length === 65 ? sigBytes.slice(0, 64) : sigBytes;
 
-    const valid = await Secp256k1.verifySignature(
-      { r: sig.slice(0, 32), s: sig.slice(32, 64) } as never,
-      messageHash,
-      pubkeyBytes,
-    );
+    // @cosmjs/crypto@0.38+ requires a Secp256k1Signature object (with toDer()),
+    // not a plain { r, s } object
+    const sig = new Secp256k1Signature(rawSig.slice(0, 32), rawSig.slice(32, 64));
+
+    const valid = await Secp256k1.verifySignature(sig, messageHash, pubkeyBytes);
 
     return valid;
   } catch (err) {

@@ -71,14 +71,15 @@ export class SocialManager {
   /** Send the user's current profile on connect (called from index.ts after auth) */
   async sendProfile(ws: WebSocket, address: string): Promise<void> {
     const profile = await store.getProfile(address);
+    // Send username first so client has it before profile_updated triggers the UI gate
+    if (profile?.username) {
+      this.send(ws, { type: "username_set", username: profile.username });
+    }
     this.send(ws, {
       type: "profile_updated",
       address,
       display_name: profile?.displayName || "",
     });
-    if (profile?.username) {
-      this.send(ws, { type: "username_set", username: profile.username });
-    }
   }
 
   private async handleSetUsername(ws: WebSocket, address: string, username: string): Promise<void> {

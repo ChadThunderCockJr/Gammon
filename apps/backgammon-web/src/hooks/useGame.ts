@@ -68,43 +68,34 @@ export function useGame(wsUrl: string, address: string | null) {
   // Authenticate with wallet signature once nonce + signing are available
   useEffect(() => {
     if (!connected || !address || !authNonce || authSentRef.current) return;
+    // Wait for signing client — effect re-runs when signArb becomes available
+    if (!signArb || !abstraxionClient) return;
 
-    if (signArb && abstraxionClient) {
-      let cancelled = false;
-      (async () => {
-        try {
-          // Get session key account data from the Abstraxion signing client
-          const accountData = await abstraxionClient.getGranteeAccountData();
-          if (!accountData) throw new Error("No grantee account data available");
-          // Sign the nonce with the session key
-          const signature = await signArb(accountData.address, authNonce);
-          const pubkey = btoa(String.fromCharCode(...accountData.pubkey));
-          if (!cancelled) {
-            sendMessage({
-              type: "auth",
-              address,
-              signature,
-              pubkey,
-              nonce: authNonce,
-              signer_address: accountData.address,
-            });
-            authSentRef.current = true;
-          }
-        } catch (err) {
-          console.error("[useGame] Wallet signing failed, sending unsigned auth:", err);
-          if (!cancelled) {
-            sendMessage({ type: "auth", address });
-            authSentRef.current = true;
-          }
+    let cancelled = false;
+    (async () => {
+      try {
+        // Get session key account data from the Abstraxion signing client
+        const accountData = await abstraxionClient.getGranteeAccountData();
+        if (!accountData) throw new Error("No grantee account data available");
+        // Sign the nonce with the session key
+        const signature = await signArb(accountData.address, authNonce);
+        const pubkey = btoa(String.fromCharCode(...accountData.pubkey));
+        if (!cancelled) {
+          sendMessage({
+            type: "auth",
+            address,
+            signature,
+            pubkey,
+            nonce: authNonce,
+            signer_address: accountData.address,
+          });
+          authSentRef.current = true;
         }
-      })();
-      return () => { cancelled = true; };
-    }
-
-    // signArb not available — send unsigned auth as fallback
-    // (server with SKIP_AUTH_VERIFICATION=true will accept it)
-    sendMessage({ type: "auth", address });
-    authSentRef.current = true;
+      } catch (err) {
+        console.error("[useGame] Wallet signing failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [connected, address, authNonce, signArb, abstraxionClient, sendMessage]);
 
   // Reset auth and queue state on disconnect
