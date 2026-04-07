@@ -31,7 +31,6 @@
     },
     "plugins": [
       "expo-router",
-      "@reclaimprotocol/inapp-rn-sdk",
       [
         "expo-camera",
         {

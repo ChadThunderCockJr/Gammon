@@ -6,28 +6,13 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_RECLAIM_APP_ID": "0x055412b5B5301ed31A3829a2795efe5dF3370Fcb",
-        "EXPO_PUBLIC_RECLAIM_APP_SECRET": "0x8cd2f0716715ad08bbea7c5bcf77737435dcab71b96aebd5fdfe92a51d372686",
-        "EXPO_PUBLIC_RECLAIM_PROVIDER_ID": "264b611d-d557-4260-9992-356029a0794b"
-      }
+      "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_RECLAIM_APP_ID": "0x055412b5B5301ed31A3829a2795efe5dF3370Fcb",
-        "EXPO_PUBLIC_RECLAIM_APP_SECRET": "0x8cd2f0716715ad08bbea7c5bcf77737435dcab71b96aebd5fdfe92a51d372686",
-        "EXPO_PUBLIC_RECLAIM_PROVIDER_ID": "264b611d-d557-4260-9992-356029a0794b"
-      }
+      "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "env": {
-        "EXPO_PUBLIC_RECLAIM_APP_ID": "0x055412b5B5301ed31A3829a2795efe5dF3370Fcb",
-        "EXPO_PUBLIC_RECLAIM_APP_SECRET": "0x8cd2f0716715ad08bbea7c5bcf77737435dcab71b96aebd5fdfe92a51d372686",
-        "EXPO_PUBLIC_RECLAIM_PROVIDER_ID": "264b611d-d557-4260-9992-356029a0794b"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {
