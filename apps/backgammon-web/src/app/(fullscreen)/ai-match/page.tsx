@@ -89,10 +89,12 @@ function AIMatchInner() {
     consultation.clearHint();
   }, [gameState.dice, gameState.currentPlayer, gameState.movesRemaining.length]);
 
-  // Clear analysis when it's the human's turn again (new turn cycle)
+  // Clear analysis when the human rolls dice for their next turn.
+  // This keeps the previous move's analysis visible through the entire
+  // AI turn and until the human starts their next move.
   const isMyTurn = gameState.currentPlayer === myColor;
   useEffect(() => {
-    if (isMyTurn && gameState.dice === null) {
+    if (isMyTurn && gameState.dice !== null) {
       consultation.clearAnalysis();
     }
   }, [isMyTurn, gameState.dice]);
