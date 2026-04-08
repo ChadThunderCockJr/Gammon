@@ -491,6 +491,12 @@ html.lux .font-brand {
   100% { transform: translate(var(--fly-dx), var(--fly-dy)); }
 }
 
+/* Hint arrow pulse */
+@keyframes hint-pulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.4; }
+}
+
 /* Slide-out menu */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }

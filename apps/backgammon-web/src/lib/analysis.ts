@@ -90,7 +90,7 @@ function formatNotation(moves: Move[]): string {
 }
 
 /** Classify equity loss into error category */
-function classifyError(equityLoss: number): ErrorClass {
+export function classifyError(equityLoss: number): ErrorClass {
   if (equityLoss >= 0.12) return "blunder";
   if (equityLoss >= 0.06) return "mistake";
   if (equityLoss >= 0.02) return "inaccuracy";
@@ -355,7 +355,7 @@ export async function analyzeGameWithGnubg(
 }
 
 /** Build a TurnAnalysis from gnubg scored results */
-function buildGnubgTurnAnalysis(
+export function buildGnubgTurnAnalysis(
   turnNumber: number,
   player: Player,
   dice: [number, number],

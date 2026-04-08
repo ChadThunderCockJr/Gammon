@@ -50,6 +50,21 @@ interface GameScreenProps {
   matchOver?: boolean;
   matchTurnHistory?: TurnRecord[][];
   turnTimeLimit?: number;
+  // Consultation mode (AI games)
+  isAIGame?: boolean;
+  consultationEnabled?: boolean;
+  onToggleConsultation?: () => void;
+  consultationAnalysis?: {
+    errorClass: "blunder" | "mistake" | "inaccuracy" | null;
+    equityLoss: number;
+    bestMoves: Move[];
+  } | null;
+  consultationAnalysisLoading?: boolean;
+  consultationHintLoading?: boolean;
+  hintMoves?: Move[] | null;
+  consultationGnubgReady?: boolean;
+  onRequestHint?: () => void;
+  onClearHint?: () => void;
 }
 
 const DEFAULT_TURN_TIME_LIMIT = 60;
@@ -183,12 +198,18 @@ function TopNav({
   showPointNumbers,
   onTogglePointNumbers,
   matchState,
+  isAIGame,
+  consultationEnabled,
+  onToggleConsultation,
 }: {
   onBack?: () => void;
   onMenuToggle: () => void;
   showPointNumbers: boolean;
   onTogglePointNumbers: () => void;
   matchState?: MatchState | null;
+  isAIGame?: boolean;
+  consultationEnabled?: boolean;
+  onToggleConsultation?: () => void;
 }) {
   return (
     <header
@@ -259,6 +280,28 @@ function TopNav({
         >
           123
         </button>
+        {isAIGame && onToggleConsultation && (
+          <button
+            onClick={onToggleConsultation}
+            aria-label={consultationEnabled ? "Disable AI consultation" : "Enable AI consultation"}
+            title={consultationEnabled ? "Disable AI hints" : "Enable AI hints"}
+            className="flex items-center justify-center cursor-pointer transition-colors"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 7,
+              border: "1px solid var(--color-border-subtle)",
+              background: consultationEnabled ? "var(--color-bg-elevated)" : "transparent",
+              color: consultationEnabled ? "var(--color-text-primary)" : "var(--color-text-muted)",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="10" cy="8" r="5" />
+              <path d="M8 13v2a2 2 0 004 0v-2" />
+              <path d="M10 3V1M14.5 5l1.5-1.5M5.5 5L4 3.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
         <button
           onClick={onMenuToggle}
           aria-label="Game menu"
@@ -278,6 +321,149 @@ function TopNav({
         </button>
       </div>
     </header>
+  );
+}
+
+// ─── Consultation Panel ───────────────────────────────────────
+
+function ConsultationPanel({
+  analysis,
+  analysisLoading,
+  hintLoading,
+  gnubgReady,
+  isMyTurn,
+  hasDice,
+  onRequestHint,
+}: {
+  analysis: { errorClass: "blunder" | "mistake" | "inaccuracy" | null; equityLoss: number } | null;
+  analysisLoading: boolean;
+  hintLoading: boolean;
+  gnubgReady: boolean;
+  isMyTurn: boolean;
+  hasDice: boolean;
+  onRequestHint?: () => void;
+}) {
+  const errorColors: Record<string, string> = {
+    blunder: "var(--color-danger)",
+    mistake: "#E08040",
+    inaccuracy: "var(--color-warning)",
+  };
+  const errorLabels: Record<string, string> = {
+    blunder: "Blunder",
+    mistake: "Mistake",
+    inaccuracy: "Inaccuracy",
+  };
+
+  const canHint = isMyTurn && hasDice && gnubgReady && !hintLoading;
+
+  return (
+    <div
+      className="flex items-center justify-between px-3 shrink-0"
+      style={{
+        height: 40,
+        background: "var(--color-bg-surface)",
+        borderBottom: "1px solid var(--color-border-subtle)",
+        fontFamily: "var(--font-body)",
+        fontSize: "0.75rem",
+      }}
+    >
+      {/* Move quality */}
+      <div className="flex items-center gap-2">
+        {analysisLoading ? (
+          <div className="flex items-center gap-1.5 text-[var(--color-text-muted)]">
+            <div
+              style={{
+                width: 8, height: 8, borderRadius: "50%",
+                border: "2px solid var(--color-border-subtle)",
+                borderTopColor: "var(--color-analysis-gold)",
+                animation: "spin 1s linear infinite",
+              }}
+            />
+            Analyzing...
+          </div>
+        ) : analysis ? (
+          <div className="flex items-center gap-2">
+            {analysis.errorClass ? (
+              <span
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                  background: errorColors[analysis.errorClass],
+                  color: "#fff",
+                  fontWeight: 700,
+                  fontSize: "0.6875rem",
+                }}
+              >
+                {errorLabels[analysis.errorClass]}
+              </span>
+            ) : (
+              <span
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                  background: "var(--color-success)",
+                  color: "#fff",
+                  fontWeight: 700,
+                  fontSize: "0.6875rem",
+                }}
+              >
+                Good
+              </span>
+            )}
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                color: "var(--color-text-muted)",
+                fontSize: "0.6875rem",
+              }}
+            >
+              {analysis.equityLoss > 0
+                ? `(-${analysis.equityLoss.toFixed(3)})`
+                : "(0.000)"}
+            </span>
+          </div>
+        ) : (
+          <span style={{ color: "var(--color-text-faint)", fontSize: "0.6875rem" }}>
+            {gnubgReady ? "Make a move to analyze" : "Loading engine..."}
+          </span>
+        )}
+      </div>
+
+      {/* Hint button */}
+      <button
+        onClick={onRequestHint}
+        disabled={!canHint}
+        className="flex items-center gap-1 cursor-pointer transition-colors"
+        style={{
+          padding: "4px 10px",
+          borderRadius: 6,
+          border: "1px solid var(--color-border-subtle)",
+          background: canHint ? "var(--color-bg-elevated)" : "transparent",
+          color: canHint ? "var(--color-analysis-gold)" : "var(--color-text-faint)",
+          fontSize: "0.6875rem",
+          fontWeight: 600,
+          opacity: canHint ? 1 : 0.5,
+          cursor: canHint ? "pointer" : "not-allowed",
+        }}
+      >
+        {hintLoading ? (
+          <div
+            style={{
+              width: 10, height: 10, borderRadius: "50%",
+              border: "2px solid var(--color-border-subtle)",
+              borderTopColor: "var(--color-analysis-gold)",
+              animation: "spin 1s linear infinite",
+            }}
+          />
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="10" cy="8" r="5" />
+            <path d="M8 13v2a2 2 0 004 0v-2" />
+          </svg>
+        )}
+        Hint
+      </button>
+    </div>
   );
 }
 
@@ -925,6 +1111,16 @@ export function GameScreen({
   matchOver = false,
   matchTurnHistory,
   turnTimeLimit = DEFAULT_TURN_TIME_LIMIT,
+  isAIGame,
+  consultationEnabled,
+  onToggleConsultation,
+  consultationAnalysis,
+  consultationAnalysisLoading,
+  consultationHintLoading,
+  hintMoves,
+  consultationGnubgReady,
+  onRequestHint,
+  onClearHint,
 }: GameScreenProps) {
   const isMyTurn = gameState.currentPlayer === myColor;
   const opponentColor: Player = myColor === "white" ? "black" : "white";
@@ -1157,7 +1353,23 @@ export function GameScreen({
         showPointNumbers={showPointNumbers}
         onTogglePointNumbers={togglePointNumbers}
         matchState={matchState}
+        isAIGame={isAIGame}
+        consultationEnabled={consultationEnabled}
+        onToggleConsultation={onToggleConsultation}
       />
+
+      {/* Consultation Panel */}
+      {consultationEnabled && (
+        <ConsultationPanel
+          analysis={consultationAnalysis ?? null}
+          analysisLoading={consultationAnalysisLoading ?? false}
+          hintLoading={consultationHintLoading ?? false}
+          gnubgReady={consultationGnubgReady ?? false}
+          isMyTurn={isMyTurn}
+          hasDice={gameState.dice !== null && gameState.movesRemaining.length > 0}
+          onRequestHint={onRequestHint}
+        />
+      )}
 
       {/* Game Area */}
       <main className="flex-1 min-h-0 flex flex-col items-center relative px-0 sm:px-2 md:px-4" style={{ paddingTop: 2, paddingBottom: 2, gap: 2 }}>
@@ -1199,6 +1411,7 @@ export function GameScreen({
             pipCounts={[opponentPips, myPips]}
             activeDieIndex={activeDieIndex}
             showPointNumbers={showPointNumbers}
+            hintMoves={consultationEnabled ? hintMoves : null}
           />
         </div>
 

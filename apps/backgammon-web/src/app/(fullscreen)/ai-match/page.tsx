@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useLocalGame } from "@/hooks/useLocalGame";
+import { useConsultation } from "@/hooks/useConsultation";
 import { GameScreen } from "@/components/GameScreen";
 import type { AIDifficulty } from "@/lib/ai";
 
@@ -53,6 +54,54 @@ function AIMatchInner() {
     rejectDouble,
   } = useLocalGame(difficulty);
 
+  const consultation = useConsultation();
+
+  // Analyze the human player's move after each turn
+  const prevTurnCountRef = useRef(turnHistory.length);
+  useEffect(() => {
+    if (!consultation.enabled) return;
+    if (turnHistory.length <= prevTurnCountRef.current) {
+      prevTurnCountRef.current = turnHistory.length;
+      return;
+    }
+    prevTurnCountRef.current = turnHistory.length;
+
+    const lastTurn = turnHistory[turnHistory.length - 1];
+    if (!lastTurn || lastTurn.player !== myColor) return;
+    if (!lastTurn.boardBefore || lastTurn.moves.length === 0) return;
+
+    const boardBefore = {
+      points: lastTurn.boardBefore.points,
+      whiteOff: lastTurn.boardBefore.whiteOff,
+      blackOff: lastTurn.boardBefore.blackOff,
+    };
+
+    consultation.analyzeMove(
+      boardBefore,
+      lastTurn.player,
+      lastTurn.dice,
+      lastTurn.moves.map((m) => ({ from: m.from, to: m.to, die: m.die })),
+    );
+  }, [turnHistory.length, consultation.enabled, myColor]);
+
+  // Clear hint when dice change or turn changes
+  useEffect(() => {
+    consultation.clearHint();
+  }, [gameState.dice, gameState.currentPlayer]);
+
+  // Clear analysis when it's the human's turn again (new turn cycle)
+  const isMyTurn = gameState.currentPlayer === myColor;
+  useEffect(() => {
+    if (isMyTurn && gameState.dice === null) {
+      consultation.clearAnalysis();
+    }
+  }, [isMyTurn, gameState.dice]);
+
+  const handleRequestHint = () => {
+    if (!gameState.dice || gameState.movesRemaining.length === 0) return;
+    consultation.requestHint(gameState.board, myColor, gameState.movesRemaining);
+  };
+
   return (
     <GameScreen
       gameState={gameState}
@@ -85,6 +134,17 @@ function AIMatchInner() {
       onRejectDouble={rejectDouble}
       forcedMoveNotice={forcedMoveNotice}
       turnHistory={turnHistory}
+      // Consultation mode
+      isAIGame
+      consultationEnabled={consultation.enabled}
+      onToggleConsultation={consultation.toggle}
+      consultationAnalysis={consultation.lastMoveAnalysis}
+      consultationAnalysisLoading={consultation.analysisLoading}
+      consultationHintLoading={consultation.hintLoading}
+      hintMoves={consultation.hintMoves}
+      consultationGnubgReady={consultation.gnubgReady}
+      onRequestHint={handleRequestHint}
+      onClearHint={consultation.clearHint}
     />
   );
 }

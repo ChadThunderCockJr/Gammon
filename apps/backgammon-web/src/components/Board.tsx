@@ -24,6 +24,8 @@ export interface BoardProps {
   activeDieIndex?: 0 | 1;
   /** Whether to display point numbers (1-24) on the board */
   showPointNumbers?: boolean;
+  /** Hint moves to display as gold arrows on the board */
+  hintMoves?: Move[] | null;
 }
 
 // ─── Design constants ────────────────────────────────────────────
@@ -226,6 +228,7 @@ export function Board({
   pipCounts,
   activeDieIndex,
   showPointNumbers: showPointNumbersProp = true,
+  hintMoves,
 }: BoardProps) {
   const flipped = myColor === "black";
   const repeatDestRef = useRef<number | null>(null);
@@ -947,6 +950,54 @@ export function Board({
           >
             <Checker color={animatingMove.color} />
           </div>
+        )}
+
+        {/* Hint arrows overlay */}
+        {hintMoves && hintMoves.length > 0 && (
+          <svg
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              zIndex: 90,
+              pointerEvents: "none",
+              overflow: "visible",
+            }}
+          >
+            <defs>
+              <marker
+                id="hint-arrow"
+                markerWidth="8"
+                markerHeight="6"
+                refX="7"
+                refY="3"
+                orient="auto"
+              >
+                <path d="M0,0 L8,3 L0,6 Z" fill="var(--color-analysis-gold)" />
+              </marker>
+            </defs>
+            {hintMoves.map((move, i) => {
+              const from = getPointCenter(move.from);
+              const to = getPointCenter(move.to);
+              if (!from || !to) return null;
+              return (
+                <line
+                  key={i}
+                  x1={from.x / scale}
+                  y1={from.y / scale}
+                  x2={to.x / scale}
+                  y2={to.y / scale}
+                  stroke="var(--color-analysis-gold)"
+                  strokeWidth={3}
+                  strokeDasharray="8 4"
+                  markerEnd="url(#hint-arrow)"
+                  opacity={0.85}
+                  style={{ animation: "hint-pulse 1.5s ease-in-out infinite" }}
+                />
+              );
+            })}
+          </svg>
         )}
       </div>
 
