@@ -9,6 +9,7 @@ import { EmojiReactions } from "./EmojiReactions";
 import { FocusTrap } from "./ui/FocusTrap";
 import { useTheme } from "@/contexts/ThemeContext";
 import type { TurnRecord } from "@/hooks/useLocalGame";
+import type { CandidateMove } from "@/lib/analysis";
 import { TURN_TIMER_TICK_MS } from "@/lib/constants";
 
 interface GameScreenProps {
@@ -58,6 +59,7 @@ interface GameScreenProps {
     errorClass: "blunder" | "mistake" | "inaccuracy" | null;
     equityLoss: number;
     bestMoves: Move[];
+    candidates: CandidateMove[];
   } | null;
   consultationAnalysisLoading?: boolean;
   consultationHintLoading?: boolean;
@@ -335,7 +337,7 @@ function ConsultationPanel({
   hasDice,
   onRequestHint,
 }: {
-  analysis: { errorClass: "blunder" | "mistake" | "inaccuracy" | null; equityLoss: number } | null;
+  analysis: { errorClass: "blunder" | "mistake" | "inaccuracy" | null; equityLoss: number; candidates: CandidateMove[] } | null;
   analysisLoading: boolean;
   hintLoading: boolean;
   gnubgReady: boolean;
@@ -343,6 +345,13 @@ function ConsultationPanel({
   hasDice: boolean;
   onRequestHint?: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Collapse when analysis changes
+  useEffect(() => {
+    setExpanded(false);
+  }, [analysis]);
+
   const errorColors: Record<string, string> = {
     blunder: "var(--color-danger)",
     mistake: "#E08040",
@@ -355,114 +364,193 @@ function ConsultationPanel({
   };
 
   const canHint = isMyTurn && hasDice && gnubgReady && !hintLoading;
+  const hasCandidates = analysis && analysis.candidates.length > 0;
 
   return (
     <div
-      className="flex items-center justify-between px-3 shrink-0"
+      className="shrink-0"
       style={{
-        height: 40,
         background: "var(--color-bg-surface)",
         borderBottom: "1px solid var(--color-border-subtle)",
         fontFamily: "var(--font-body)",
         fontSize: "0.75rem",
       }}
     >
-      {/* Move quality */}
-      <div className="flex items-center gap-2">
-        {analysisLoading ? (
-          <div className="flex items-center gap-1.5 text-[var(--color-text-muted)]">
+      {/* Main bar */}
+      <div
+        className="flex items-center justify-between px-3"
+        style={{ height: 40 }}
+      >
+        {/* Move quality badge — clickable when candidates exist */}
+        <div className="flex items-center gap-2">
+          {analysisLoading ? (
+            <div className="flex items-center gap-1.5 text-[var(--color-text-muted)]">
+              <div
+                style={{
+                  width: 8, height: 8, borderRadius: "50%",
+                  border: "2px solid var(--color-border-subtle)",
+                  borderTopColor: "var(--color-analysis-gold)",
+                  animation: "spin 1s linear infinite",
+                }}
+              />
+              Analyzing...
+            </div>
+          ) : analysis ? (
+            <button
+              onClick={() => hasCandidates && setExpanded(!expanded)}
+              className="flex items-center gap-2"
+              style={{
+                background: "none", border: "none", padding: 0,
+                cursor: hasCandidates ? "pointer" : "default",
+              }}
+            >
+              {analysis.errorClass ? (
+                <span
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    background: errorColors[analysis.errorClass],
+                    color: "#fff",
+                    fontWeight: 700,
+                    fontSize: "0.6875rem",
+                  }}
+                >
+                  {errorLabels[analysis.errorClass]}
+                </span>
+              ) : (
+                <span
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    background: "var(--color-success)",
+                    color: "#fff",
+                    fontWeight: 700,
+                    fontSize: "0.6875rem",
+                  }}
+                >
+                  Good
+                </span>
+              )}
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--color-text-muted)",
+                  fontSize: "0.6875rem",
+                }}
+              >
+                {analysis.equityLoss > 0
+                  ? `(-${analysis.equityLoss.toFixed(3)})`
+                  : "(0.000)"}
+              </span>
+              {hasCandidates && (
+                <span style={{ color: "var(--color-text-faint)", fontSize: "0.625rem", transition: "transform 0.15s", transform: expanded ? "rotate(180deg)" : "rotate(0)" }}>
+                  ▾
+                </span>
+              )}
+            </button>
+          ) : (
+            <span style={{ color: "var(--color-text-faint)", fontSize: "0.6875rem" }}>
+              {gnubgReady ? "Make a move to analyze" : "Loading engine..."}
+            </span>
+          )}
+        </div>
+
+        {/* Hint button */}
+        <button
+          onClick={onRequestHint}
+          disabled={!canHint}
+          className="flex items-center gap-1 cursor-pointer transition-colors"
+          style={{
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--color-border-subtle)",
+            background: canHint ? "var(--color-bg-elevated)" : "transparent",
+            color: canHint ? "var(--color-analysis-gold)" : "var(--color-text-faint)",
+            fontSize: "0.6875rem",
+            fontWeight: 600,
+            opacity: canHint ? 1 : 0.5,
+            cursor: canHint ? "pointer" : "not-allowed",
+          }}
+        >
+          {hintLoading ? (
             <div
               style={{
-                width: 8, height: 8, borderRadius: "50%",
+                width: 10, height: 10, borderRadius: "50%",
                 border: "2px solid var(--color-border-subtle)",
                 borderTopColor: "var(--color-analysis-gold)",
                 animation: "spin 1s linear infinite",
               }}
             />
-            Analyzing...
-          </div>
-        ) : analysis ? (
-          <div className="flex items-center gap-2">
-            {analysis.errorClass ? (
-              <span
-                style={{
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                  background: errorColors[analysis.errorClass],
-                  color: "#fff",
-                  fontWeight: 700,
-                  fontSize: "0.6875rem",
-                }}
-              >
-                {errorLabels[analysis.errorClass]}
-              </span>
-            ) : (
-              <span
-                style={{
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                  background: "var(--color-success)",
-                  color: "#fff",
-                  fontWeight: 700,
-                  fontSize: "0.6875rem",
-                }}
-              >
-                Good
-              </span>
-            )}
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                color: "var(--color-text-muted)",
-                fontSize: "0.6875rem",
-              }}
-            >
-              {analysis.equityLoss > 0
-                ? `(-${analysis.equityLoss.toFixed(3)})`
-                : "(0.000)"}
-            </span>
-          </div>
-        ) : (
-          <span style={{ color: "var(--color-text-faint)", fontSize: "0.6875rem" }}>
-            {gnubgReady ? "Make a move to analyze" : "Loading engine..."}
-          </span>
-        )}
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="10" cy="8" r="5" />
+              <path d="M8 13v2a2 2 0 004 0v-2" />
+            </svg>
+          )}
+          Hint
+        </button>
       </div>
 
-      {/* Hint button */}
-      <button
-        onClick={onRequestHint}
-        disabled={!canHint}
-        className="flex items-center gap-1 cursor-pointer transition-colors"
-        style={{
-          padding: "4px 10px",
-          borderRadius: 6,
-          border: "1px solid var(--color-border-subtle)",
-          background: canHint ? "var(--color-bg-elevated)" : "transparent",
-          color: canHint ? "var(--color-analysis-gold)" : "var(--color-text-faint)",
-          fontSize: "0.6875rem",
-          fontWeight: 600,
-          opacity: canHint ? 1 : 0.5,
-          cursor: canHint ? "pointer" : "not-allowed",
-        }}
-      >
-        {hintLoading ? (
-          <div
-            style={{
-              width: 10, height: 10, borderRadius: "50%",
-              border: "2px solid var(--color-border-subtle)",
-              borderTopColor: "var(--color-analysis-gold)",
-              animation: "spin 1s linear infinite",
-            }}
-          />
-        ) : (
-          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <circle cx="10" cy="8" r="5" />
-            <path d="M8 13v2a2 2 0 004 0v-2" />
-          </svg>
-        )}
-        Hint
-      </button>
+      {/* Expanded candidates list */}
+      {expanded && analysis && analysis.candidates.length > 0 && (
+        <div
+          style={{
+            borderTop: "1px solid var(--color-border-subtle)",
+            padding: "6px 12px 8px",
+            maxHeight: 160,
+            overflowY: "auto",
+          }}
+        >
+          {analysis.candidates.map((c, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-2"
+              style={{
+                padding: "4px 0",
+                borderBottom: i < analysis.candidates.length - 1 ? "1px solid var(--color-border-subtle)" : "none",
+              }}
+            >
+              <span
+                style={{
+                  width: 18, textAlign: "center",
+                  fontWeight: 700,
+                  fontSize: "0.625rem",
+                  color: i === 0 ? "var(--color-success)" : "var(--color-text-muted)",
+                }}
+              >
+                {i + 1}.
+              </span>
+              <span
+                style={{
+                  flex: 1,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.6875rem",
+                  color: c.isPlayed ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                  fontWeight: c.isPlayed ? 700 : 400,
+                }}
+              >
+                {c.notation || c.moves.map((m) => `${m.from}/${m.to}`).join(" ")}
+                {c.isPlayed && (
+                  <span style={{ color: "var(--color-text-muted)", fontWeight: 400, marginLeft: 4 }}>
+                    ←
+                  </span>
+                )}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "0.625rem",
+                  color: "var(--color-text-muted)",
+                  minWidth: 48,
+                  textAlign: "right",
+                }}
+              >
+                {c.equity >= 0 ? "+" : ""}{c.equity.toFixed(3)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
