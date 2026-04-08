@@ -189,7 +189,15 @@ function boardToGnubg(
 function gnubgMovesToOurs(
   plays: { from: string; to: string }[],
   currentPlayer: Player,
+  dice: [number, number],
 ): Move[] {
+  // Track which dice are available so we can assign the correct die
+  // to each sub-move, especially for bear-off where multiple dice
+  // can produce the same from→to (exact vs over-bear).
+  const availableDice = dice[0] === dice[1]
+    ? [dice[0], dice[0], dice[0], dice[0]]
+    : [dice[0], dice[1]];
+
   return plays.map((play) => {
     let from: number;
     let to: number;
@@ -208,19 +216,41 @@ function gnubgMovesToOurs(
       to = currentPlayer === "white" ? n : 25 - n;
     }
 
-    // Determine die value from GNUBG's X-perspective (X always plays 24→1).
-    // The die is the distance in GNUBG coordinates, which equals the actual
-    // die value GNUBG assigned to this sub-move.
+    // Determine which die was used by matching against available dice.
+    // In GNUBG's X-perspective, X plays 24→1:
+    //   - Normal move: die = distance in GNUBG coords (from - to)
+    //   - Bar entry: die = 25 - dest
+    //   - Bear-off: die >= source point (exact or over-bear)
     let die: number;
-    if (play.from === "bar") {
-      // Bar entry: X enters from point 25 (conceptual), die = 25 - dest
+    const gnubgFrom = parseInt(play.from, 10);
+
+    if (play.to === "off") {
+      // Bear-off: the die is >= gnubgFrom (source point in X-coords).
+      // For exact bear-off, die === gnubgFrom. For over-bear, die > gnubgFrom.
+      // Find the matching die from available dice.
+      const exactIdx = availableDice.indexOf(gnubgFrom);
+      if (exactIdx !== -1) {
+        // Exact bear-off die available
+        die = gnubgFrom;
+        availableDice.splice(exactIdx, 1);
+      } else {
+        // Over-bear: find the smallest available die >= gnubgFrom
+        const overBearIdx = availableDice.findIndex(d => d >= gnubgFrom);
+        if (overBearIdx !== -1) {
+          die = availableDice[overBearIdx];
+          availableDice.splice(overBearIdx, 1);
+        } else {
+          die = gnubgFrom; // shouldn't happen, fallback
+        }
+      }
+    } else if (play.from === "bar") {
       die = 25 - parseInt(play.to, 10);
-    } else if (play.to === "off") {
-      // Bear-off: X bears off past point 0, die = source point value
-      die = parseInt(play.from, 10);
+      const idx = availableDice.indexOf(die);
+      if (idx !== -1) availableDice.splice(idx, 1);
     } else {
-      // Normal move: distance in GNUBG coords
-      die = parseInt(play.from, 10) - parseInt(play.to, 10);
+      die = gnubgFrom - parseInt(play.to, 10);
+      const idx = availableDice.indexOf(die);
+      if (idx !== -1) availableDice.splice(idx, 1);
     }
 
     return { from, to, die };
@@ -260,6 +290,7 @@ export async function getGnubgMoves(
               to: String(p.to),
             })),
             player,
+            dice,
           ),
           evaluation: raw.evaluation
             ? {
