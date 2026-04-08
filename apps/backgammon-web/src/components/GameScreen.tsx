@@ -337,6 +337,8 @@ function ConsultationPanel({
   isMyTurn,
   hasDice,
   onRequestHint,
+  onSelectCandidate,
+  myColor,
 }: {
   analysis: { errorClass: "blunder" | "mistake" | "inaccuracy" | null; equityLoss: number; candidates: CandidateMove[] } | null;
   analysisLoading: boolean;
@@ -345,12 +347,17 @@ function ConsultationPanel({
   isMyTurn: boolean;
   hasDice: boolean;
   onRequestHint?: () => void;
+  onSelectCandidate?: (moves: Move[] | null) => void;
+  myColor?: Player;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
 
-  // Collapse when analysis changes
+  // Collapse and deselect when analysis changes
   useEffect(() => {
     setExpanded(false);
+    setSelectedIdx(null);
+    onSelectCandidate?.(null);
   }, [analysis]);
 
   const errorColors: Record<string, string> = {
@@ -493,65 +500,93 @@ function ConsultationPanel({
       </div>
 
       {/* Expanded candidates list */}
-      {expanded && analysis && analysis.candidates.length > 0 && (
-        <div
-          style={{
-            borderTop: "1px solid var(--color-border-subtle)",
-            padding: "6px 12px 8px",
-            maxHeight: 160,
-            overflowY: "auto",
-          }}
-        >
-          {analysis.candidates.map((c, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-2"
-              style={{
-                padding: "4px 0",
-                borderBottom: i < analysis.candidates.length - 1 ? "1px solid var(--color-border-subtle)" : "none",
-              }}
-            >
-              <span
-                style={{
-                  width: 18, textAlign: "center",
-                  fontWeight: 700,
-                  fontSize: "0.625rem",
-                  color: i === 0 ? "var(--color-success)" : "var(--color-text-muted)",
-                }}
-              >
-                {i + 1}.
-              </span>
-              <span
-                style={{
-                  flex: 1,
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "0.6875rem",
-                  color: c.isPlayed ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                  fontWeight: c.isPlayed ? 700 : 400,
-                }}
-              >
-                {c.notation || c.moves.map((m) => `${m.from}/${m.to}`).join(" ")}
-                {c.isPlayed && (
-                  <span style={{ color: "var(--color-text-muted)", fontWeight: 400, marginLeft: 4 }}>
-                    ←
+      {expanded && analysis && analysis.candidates.length > 0 && (() => {
+        // Show equity relative to best move (diff from #1)
+        const bestEq = analysis.candidates[0].equity;
+        const isBlack = myColor === "black";
+
+        return (
+          <div
+            style={{
+              borderTop: "1px solid var(--color-border-subtle)",
+              padding: "6px 12px 8px",
+              maxHeight: 160,
+              overflowY: "auto",
+            }}
+          >
+            {analysis.candidates.map((c, i) => {
+              // Equity diff from best, from the player's perspective
+              const diff = isBlack ? (bestEq - c.equity) : (c.equity - bestEq);
+              const isSelected = selectedIdx === i;
+
+              return (
+                <div
+                  key={i}
+                  onClick={() => {
+                    const next = isSelected ? null : i;
+                    setSelectedIdx(next);
+                    onSelectCandidate?.(next !== null ? c.moves : null);
+                  }}
+                  className="flex items-center gap-2"
+                  style={{
+                    padding: "5px 4px",
+                    borderBottom: i < analysis.candidates.length - 1 ? "1px solid var(--color-border-subtle)" : "none",
+                    cursor: "pointer",
+                    background: isSelected ? "var(--color-analysis-gold-faint)" : "transparent",
+                    borderRadius: 4,
+                    transition: "background 0.1s",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 18, textAlign: "center",
+                      fontWeight: 700,
+                      fontSize: "0.625rem",
+                      color: i === 0 ? "var(--color-success)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    {i + 1}.
                   </span>
-                )}
-              </span>
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "0.625rem",
-                  color: "var(--color-text-muted)",
-                  minWidth: 48,
-                  textAlign: "right",
-                }}
-              >
-                {c.equity >= 0 ? "+" : ""}{c.equity.toFixed(3)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+                  <span
+                    style={{
+                      flex: 1,
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.6875rem",
+                      color: c.isPlayed ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                      fontWeight: c.isPlayed ? 700 : 400,
+                    }}
+                  >
+                    {c.notation || c.moves.map((m) => `${m.from}/${m.to}`).join(" ")}
+                    {c.isPlayed && (
+                      <span style={{ color: "var(--color-text-muted)", fontWeight: 400, marginLeft: 4 }}>
+                        ←
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "0.625rem",
+                      fontWeight: 600,
+                      minWidth: 52,
+                      textAlign: "right",
+                      color: i === 0
+                        ? "var(--color-success)"
+                        : diff < -0.06
+                          ? "var(--color-danger)"
+                          : diff < -0.02
+                            ? "var(--color-warning)"
+                            : "var(--color-text-muted)",
+                    }}
+                  >
+                    {i === 0 ? "Best" : diff >= 0 ? `+${diff.toFixed(3)}` : diff.toFixed(3)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1254,6 +1289,9 @@ export function GameScreen({
   const [showPostGame, setShowPostGame] = useState(false);
 
   // Point numbers toggle — persisted in localStorage
+  // Selected candidate moves from consultation panel (shown as arrows on board)
+  const [selectedCandidateMoves, setSelectedCandidateMoves] = useState<Move[] | null>(null);
+
   const [showPointNumbers, setShowPointNumbers] = useState(() => {
     if (typeof window === "undefined") return true;
     const stored = localStorage.getItem("gammon-show-point-numbers");
@@ -1458,6 +1496,8 @@ export function GameScreen({
           isMyTurn={isMyTurn}
           hasDice={canRequestHint ?? (gameState.dice !== null && gameState.movesRemaining.length > 0)}
           onRequestHint={onRequestHint}
+          onSelectCandidate={setSelectedCandidateMoves}
+          myColor={myColor}
         />
       )}
 
@@ -1501,7 +1541,7 @@ export function GameScreen({
             pipCounts={[opponentPips, myPips]}
             activeDieIndex={activeDieIndex}
             showPointNumbers={showPointNumbers}
-            hintMoves={consultationEnabled ? hintMoves : null}
+            hintMoves={consultationEnabled ? (selectedCandidateMoves || hintMoves) : null}
           />
         </div>
 
