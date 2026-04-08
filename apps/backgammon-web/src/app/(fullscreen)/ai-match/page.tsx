@@ -84,10 +84,10 @@ function AIMatchInner() {
     );
   }, [turnHistory.length, consultation.enabled, myColor]);
 
-  // Clear hint when dice change or turn changes
+  // Clear hint when dice change, turn changes, or a move is made
   useEffect(() => {
     consultation.clearHint();
-  }, [gameState.dice, gameState.currentPlayer]);
+  }, [gameState.dice, gameState.currentPlayer, gameState.movesRemaining.length]);
 
   // Clear analysis when it's the human's turn again (new turn cycle)
   const isMyTurn = gameState.currentPlayer === myColor;
@@ -97,8 +97,14 @@ function AIMatchInner() {
     }
   }, [isMyTurn, gameState.dice]);
 
+  // Hint is only valid at the start of a turn (all dice available).
+  // GNUBG evaluates full turns, not partial turns, so mid-turn hints
+  // would be wrong — it would treat remaining dice as the full roll.
+  const allDiceAvailable = gameState.dice !== null &&
+    gameState.movesRemaining.length === (gameState.dice[0] === gameState.dice[1] ? 4 : 2);
+
   const handleRequestHint = () => {
-    if (!gameState.dice || gameState.movesRemaining.length === 0) return;
+    if (!gameState.dice || !allDiceAvailable) return;
     consultation.requestHint(gameState.board, myColor, gameState.movesRemaining);
   };
 
@@ -143,6 +149,7 @@ function AIMatchInner() {
       consultationHintLoading={consultation.hintLoading}
       hintMoves={consultation.hintMoves}
       consultationGnubgReady={consultation.gnubgReady}
+      canRequestHint={allDiceAvailable}
       onRequestHint={handleRequestHint}
       onClearHint={consultation.clearHint}
     />

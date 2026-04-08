@@ -65,6 +65,7 @@ interface GameScreenProps {
   consultationHintLoading?: boolean;
   hintMoves?: Move[] | null;
   consultationGnubgReady?: boolean;
+  canRequestHint?: boolean;
   onRequestHint?: () => void;
   onClearHint?: () => void;
 }
@@ -1207,6 +1208,7 @@ export function GameScreen({
   consultationHintLoading,
   hintMoves,
   consultationGnubgReady,
+  canRequestHint,
   onRequestHint,
   onClearHint,
 }: GameScreenProps) {
@@ -1454,7 +1456,7 @@ export function GameScreen({
           hintLoading={consultationHintLoading ?? false}
           gnubgReady={consultationGnubgReady ?? false}
           isMyTurn={isMyTurn}
-          hasDice={gameState.dice !== null && gameState.movesRemaining.length > 0}
+          hasDice={canRequestHint ?? (gameState.dice !== null && gameState.movesRemaining.length > 0)}
           onRequestHint={onRequestHint}
         />
       )}
