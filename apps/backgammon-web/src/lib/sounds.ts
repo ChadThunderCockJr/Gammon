@@ -1,6 +1,18 @@
 let ctx: AudioContext | null = null;
 
-function getCtx(): AudioContext {
+const MUTE_KEY = "gammon-sound-muted";
+
+export function isSoundMuted(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(MUTE_KEY) === "true";
+}
+
+export function setSoundMuted(muted: boolean): void {
+  try { localStorage.setItem(MUTE_KEY, String(muted)); } catch {}
+}
+
+function getCtx(): AudioContext | null {
+  if (isSoundMuted()) return null;
   if (!ctx) ctx = new AudioContext();
   if (ctx.state === "suspended") ctx.resume();
   return ctx;
@@ -55,6 +67,7 @@ const GAMEOVER_DECAY = 0.4;
 export function playDiceRoll() {
   try {
     const ac = getCtx();
+    if (!ac) return;
     const bufferSize = Math.floor(ac.sampleRate * DICE_DURATION);
     const buffer = ac.createBuffer(1, bufferSize, ac.sampleRate);
     const data = buffer.getChannelData(0);
@@ -77,6 +90,7 @@ export function playDiceRoll() {
 export function playCheckerPlace() {
   try {
     const ac = getCtx();
+    if (!ac) return;
     const t = ac.currentTime;
     const osc = ac.createOscillator();
     osc.frequency.setValueAtTime(PLACE_FREQ_START, t);
@@ -94,6 +108,7 @@ export function playCheckerPlace() {
 export function playCheckerHit() {
   try {
     const ac = getCtx();
+    if (!ac) return;
     const t = ac.currentTime;
     const osc = ac.createOscillator();
     osc.frequency.setValueAtTime(HIT_FREQ_START, t);
@@ -123,6 +138,7 @@ export function playCheckerHit() {
 export function playTurnEnd() {
   try {
     const ac = getCtx();
+    if (!ac) return;
     const t = ac.currentTime;
     TURN_END_FREQS.forEach((freq, i) => {
       const osc = ac.createOscillator();
@@ -143,6 +159,7 @@ export function playTurnEnd() {
 export function playGameOver(won: boolean) {
   try {
     const ac = getCtx();
+    if (!ac) return;
     const t = ac.currentTime;
     const notes = won ? WIN_NOTES : LOSE_NOTES;
     notes.forEach((freq, i) => {

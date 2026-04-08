@@ -10,6 +10,7 @@ import { FocusTrap } from "./ui/FocusTrap";
 import { useTheme } from "@/contexts/ThemeContext";
 import type { TurnRecord } from "@/hooks/useLocalGame";
 import type { CandidateMove } from "@/lib/analysis";
+import { isSoundMuted, setSoundMuted } from "@/lib/sounds";
 import { TURN_TIMER_TICK_MS } from "@/lib/constants";
 
 interface GameScreenProps {
@@ -607,6 +608,7 @@ function SlideOutMenu({
   onShowMoveList?: () => void;
 }) {
   const [showResignConfirm, setShowResignConfirm] = useState(false);
+  const [muted, setMuted] = useState(() => isSoundMuted());
   const { theme, setTheme } = useTheme();
   const themeLabels = { light: "Light", dark: "Dark", lux: "Lux" } as const;
   const themes = ["light", "dark", "lux"] as const;
@@ -619,6 +621,7 @@ function SlideOutMenu({
     { label: "Move List", action: () => { onShowMoveList?.(); onClose(); } },
     { label: "Verify Dice", action: () => { window.open("/verify-rolls", "_blank"); onClose(); } },
     { type: "separator" as const },
+    { label: `Sound: ${muted ? "Off" : "On"}`, action: () => { const next = !muted; setMuted(next); setSoundMuted(next); } },
     { label: `Theme: ${themeLabels[theme]}`, action: () => setTheme(nextTheme) },
   ];
 
