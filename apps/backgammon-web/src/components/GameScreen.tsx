@@ -429,7 +429,7 @@ function ConsultationPanel({
                     fontSize: "0.6875rem",
                   }}
                 >
-                  Good
+                  {analysis.equityLoss === 0 ? "Best" : "Good"}
                 </span>
               )}
               <span
