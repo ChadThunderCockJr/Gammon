@@ -968,33 +968,53 @@ export function Board({
             <defs>
               <marker
                 id="hint-arrow"
-                markerWidth="8"
-                markerHeight="6"
-                refX="7"
-                refY="3"
+                markerWidth="10"
+                markerHeight="8"
+                refX="9"
+                refY="4"
                 orient="auto"
               >
-                <path d="M0,0 L8,3 L0,6 Z" fill="var(--color-analysis-gold)" />
+                <path d="M0,0 L10,4 L0,8 Z" fill="var(--color-analysis-gold)" />
               </marker>
+              <filter id="hint-glow">
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
             </defs>
             {hintMoves.map((move, i) => {
               const from = getPointCenter(move.from);
               const to = getPointCenter(move.to);
               if (!from || !to) return null;
               return (
-                <line
-                  key={i}
-                  x1={from.x / scale}
-                  y1={from.y / scale}
-                  x2={to.x / scale}
-                  y2={to.y / scale}
-                  stroke="var(--color-analysis-gold)"
-                  strokeWidth={3}
-                  strokeDasharray="8 4"
-                  markerEnd="url(#hint-arrow)"
-                  opacity={0.85}
-                  style={{ animation: "hint-pulse 1.5s ease-in-out infinite" }}
-                />
+                <g key={i} style={{ animation: "hint-pulse 1.5s ease-in-out infinite" }}>
+                  {/* Glow layer */}
+                  <line
+                    x1={from.x / scale}
+                    y1={from.y / scale}
+                    x2={to.x / scale}
+                    y2={to.y / scale}
+                    stroke="var(--color-analysis-gold)"
+                    strokeWidth={10}
+                    strokeLinecap="round"
+                    opacity={0.25}
+                    filter="url(#hint-glow)"
+                  />
+                  {/* Main arrow */}
+                  <line
+                    x1={from.x / scale}
+                    y1={from.y / scale}
+                    x2={to.x / scale}
+                    y2={to.y / scale}
+                    stroke="var(--color-analysis-gold)"
+                    strokeWidth={5}
+                    strokeLinecap="round"
+                    markerEnd="url(#hint-arrow)"
+                    opacity={0.9}
+                  />
+                </g>
               );
             })}
           </svg>
