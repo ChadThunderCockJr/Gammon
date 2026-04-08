@@ -208,24 +208,19 @@ function gnubgMovesToOurs(
       to = currentPlayer === "white" ? n : 25 - n;
     }
 
-    // Determine die value
+    // Determine die value from GNUBG's X-perspective (X always plays 24→1).
+    // The die is the distance in GNUBG coordinates, which equals the actual
+    // die value GNUBG assigned to this sub-move.
     let die: number;
     if (play.from === "bar") {
-      // Bar entry: die = distance from bar to destination
-      if (currentPlayer === "white") {
-        die = 25 - to; // white enters from point 25 side
-      } else {
-        die = to; // black enters from point 0 side
-      }
+      // Bar entry: X enters from point 25 (conceptual), die = 25 - dest
+      die = 25 - parseInt(play.to, 10);
     } else if (play.to === "off") {
-      // Bear-off
-      if (currentPlayer === "white") {
-        die = from; // white bears off toward 0
-      } else {
-        die = 25 - from; // black bears off toward 25
-      }
+      // Bear-off: X bears off past point 0, die = source point value
+      die = parseInt(play.from, 10);
     } else {
-      die = Math.abs(from - to);
+      // Normal move: distance in GNUBG coords
+      die = parseInt(play.from, 10) - parseInt(play.to, 10);
     }
 
     return { from, to, die };

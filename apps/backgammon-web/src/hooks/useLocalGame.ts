@@ -792,7 +792,7 @@ export function useLocalGame(difficulty: AIDifficulty) {
                 const t = setTimeout(() => {
                   if (cancelled || moveFailed) return;
 
-                  const result = coreMakeMove(currentBoard, move.from, move.to);
+                  const result = coreMakeMove(currentBoard, move.from, move.to, move.die);
                   if (!result) {
                     console.error("[AI] coreMakeMove failed for move", i, move, "board:", currentBoard);
                     moveFailed = true;

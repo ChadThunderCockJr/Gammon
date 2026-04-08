@@ -55,11 +55,14 @@ export function setDice(
 
 /**
  * Validate and apply a move. Returns the new game state or null if invalid.
+ * Optional `preferDie` hint: when multiple dice can produce the same from→to,
+ * prefer consuming this die value. Used by the AI to match GNUBG's die assignment.
  */
 export function makeMove(
   state: GameState,
   from: number,
-  to: number
+  to: number,
+  preferDie?: number
 ): GameState | null {
   if (state.gameOver) return null;
   if (state.movesRemaining.length === 0) return null;
@@ -72,14 +75,22 @@ export function makeMove(
     state.movesRemaining
   );
 
-  // Check if this move appears as a valid first move in any maximum-length sequence
+  // Check if this move appears as a valid first move in any maximum-length sequence.
+  // If preferDie is specified, prefer sequences that use that die value.
   let matchedDie: number | null = null;
+  let fallbackDie: number | null = null;
   for (const seq of allSequences) {
     if (seq.length > 0 && seq[0].from === from && seq[0].to === to) {
-      matchedDie = seq[0].die;
-      break;
+      if (preferDie !== undefined && seq[0].die === preferDie) {
+        matchedDie = seq[0].die;
+        break;
+      }
+      if (fallbackDie === null) {
+        fallbackDie = seq[0].die;
+      }
     }
   }
+  if (matchedDie === null) matchedDie = fallbackDie;
 
   if (matchedDie === null) return null; // Illegal move
 
