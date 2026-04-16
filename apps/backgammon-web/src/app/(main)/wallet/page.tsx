@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { useBalance } from "@/hooks/useBalance";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 import { API_BASE } from "@/lib/api";
 
 type Tab = "deposit" | "withdraw";
@@ -11,6 +13,15 @@ type FlowStep = "idle" | "userinfo" | "linking" | "amount" | "processing" | "don
 export default function WalletPage() {
   const { address, isConnected } = useAuth();
   const { balance, refetch } = useBalance();
+  const isNativeApp = useIsNativeApp();
+  const router = useRouter();
+
+  // Wallet / fiat on-ramp is web-only per App Store policy. Send native-shell users home.
+  useEffect(() => {
+    if (isNativeApp) router.replace("/");
+  }, [isNativeApp, router]);
+
+  if (isNativeApp) return null;
   const [tab, setTab] = useState<Tab>("deposit");
   const [step, setStep] = useState<FlowStep>("idle");
   const [amount, setAmount] = useState("");

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useSocialContext } from "@/contexts/SocialContext";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 // ── Icons ──────────────────────────────────────────────────────
 
@@ -174,6 +175,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const { displayName, username } = useSocialContext();
   const userLabel = displayName || username || "Player";
+  const isNativeApp = useIsNativeApp();
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -234,7 +236,9 @@ export function Sidebar() {
         <NavItem icon={Icons.play} label="Play" href="/matchmaking" active={isActive("/matchmaking")} />
         <NavItem icon={Icons.trophy} label="Tournaments" href="/tournaments" active={isActive("/tournaments")} />
         <NavItem icon={Icons.users} label="Social" href="/social" active={isActive("/social")} />
-        <NavItem icon={Icons.wallet} label="Wallet" href="/wallet" active={isActive("/wallet")} />
+        {!isNativeApp && (
+          <NavItem icon={Icons.wallet} label="Wallet" href="/wallet" active={isActive("/wallet")} />
+        )}
       </nav>
 
       <div
