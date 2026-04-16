@@ -17,6 +17,14 @@ export default function MainLayout({
 
   useEffect(() => {
     if (!isConnecting && !isConnected) {
+      // Preserve the intended destination so the login page can return here after auth.
+      // Without this, share links like /join/abc123 get swallowed by the redirect to /.
+      if (typeof window !== "undefined") {
+        const dest = window.location.pathname + window.location.search;
+        if (dest && dest !== "/" && !dest.startsWith("/login")) {
+          sessionStorage.setItem("postLoginPath", dest);
+        }
+      }
       router.replace("/login");
     }
   }, [isConnected, isConnecting, router]);

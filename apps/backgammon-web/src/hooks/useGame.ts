@@ -93,6 +93,12 @@ export function useGame(wsUrl: string, address: string | null) {
         }
       } catch (err) {
         console.error("[useGame] Wallet signing failed:", err);
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Wallet signing failed";
+          dispatch({ type: "ERROR", message: `Sign-in failed: ${msg}. Try refreshing.` });
+          // Allow a retry: the next authNonce (or reconnect) can trigger signing again.
+          authSentRef.current = false;
+        }
       }
     })();
     return () => { cancelled = true; };
