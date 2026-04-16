@@ -10,6 +10,7 @@ import {
 import { useSocialContext } from "@/contexts/SocialContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useAuth } from "@/hooks/useAuth";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 import { fetchStats, fetchMatches, fetchProfile, timeAgo } from "@/lib/api";
 import type { PlayerStats, MatchResult as MatchResultType, PlayerProfile } from "@/lib/api";
 
@@ -141,6 +142,7 @@ export default function ProfilePage() {
   const { address } = useAuth();
   const social = useSocialContext();
   const { theme, setTheme } = useTheme();
+  const isNativeApp = useIsNativeApp();
   const [activeTab, setActiveTab] = useState("overview");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("anthony@example.com");
@@ -653,44 +655,46 @@ export default function ProfilePage() {
                 ))}
               </Card>
 
-              {/* Wallet */}
-              <Card>
-                <SectionLabel>Wallet</SectionLabel>
+              {/* Wallet — web-only. Hidden in the native iOS shell per App Store policy. */}
+              {!isNativeApp && (
+                <Card>
+                  <SectionLabel>Wallet</SectionLabel>
 
-                {/* Balance */}
-                <div style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "14px 16px", borderRadius: 6,
-                  background: "var(--color-bg-base)", border: "1px solid var(--color-border-subtle)",
-                  marginBottom: 16,
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <WalletIcon />
-                    <span style={{
-                      fontSize: "1.375rem", fontWeight: 700, color: "var(--color-gold-primary)",
-                      fontFamily: "var(--font-mono)",
-                    }}>--</span>
-                    <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", fontWeight: 600 }}>USDC</span>
-                  </div>
+                  {/* Balance */}
                   <div style={{
-                    display: "flex", alignItems: "center", gap: 4,
-                    fontSize: "0.625rem", color: "var(--color-gold-primary)", fontWeight: 600,
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "14px 16px", borderRadius: 6,
+                    background: "var(--color-bg-base)", border: "1px solid var(--color-border-subtle)",
+                    marginBottom: 16,
                   }}>
-                    <ShieldIcon size={12} />
-                    On-chain escrow
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <WalletIcon />
+                      <span style={{
+                        fontSize: "1.375rem", fontWeight: 700, color: "var(--color-gold-primary)",
+                        fontFamily: "var(--font-mono)",
+                      }}>--</span>
+                      <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", fontWeight: 600 }}>USDC</span>
+                    </div>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      fontSize: "0.625rem", color: "var(--color-gold-primary)", fontWeight: 600,
+                    }}>
+                      <ShieldIcon size={12} />
+                      On-chain escrow
+                    </div>
                   </div>
-                </div>
 
-                {/* Transaction History */}
-                <div style={{
-                  fontSize: "0.6875rem", fontWeight: 700, color: "var(--color-text-muted)",
-                  textTransform: "uppercase", letterSpacing: "0.04em",
-                  marginBottom: 8,
-                }}>Recent Transactions</div>
-                <div style={{ padding: "20px 0", textAlign: "center", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
-                  Coming soon
-                </div>
-              </Card>
+                  {/* Transaction History */}
+                  <div style={{
+                    fontSize: "0.6875rem", fontWeight: 700, color: "var(--color-text-muted)",
+                    textTransform: "uppercase", letterSpacing: "0.04em",
+                    marginBottom: 8,
+                  }}>Recent Transactions</div>
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: "0.8125rem", color: "var(--color-text-muted)" }}>
+                    Coming soon
+                  </div>
+                </Card>
+              )}
             </>
           )}
 

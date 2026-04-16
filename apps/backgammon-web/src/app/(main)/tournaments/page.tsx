@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { API_BASE } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 interface Tournament {
   id: string;
@@ -15,6 +16,7 @@ interface Tournament {
 
 export default function TournamentsPage() {
   const { address, isConnected } = useAuth();
+  const isNativeApp = useIsNativeApp();
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(true);
   const [registering, setRegistering] = useState<string | null>(null);
@@ -120,7 +122,7 @@ export default function TournamentsPage() {
                 </div>
                 <div style={{ fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
                   {formatTime(t.startAt)} · {t.playerCount}/{t.maxPlayers} players
-                  {t.entryFee > 0 && ` · ${t.entryFee} USDC entry`}
+                  {!isNativeApp && t.entryFee > 0 && ` · ${t.entryFee} USDC entry`}
                 </div>
               </div>
 
