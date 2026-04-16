@@ -359,7 +359,7 @@ function ConsultationPanel({
     setExpanded(false);
     setSelectedIdx(null);
     onSelectCandidate?.(null);
-  }, [analysis]);
+  }, [analysis, onSelectCandidate]);
 
   const errorColors: Record<string, string> = {
     blunder: "var(--color-danger)",
@@ -1291,10 +1291,10 @@ export function GameScreen({
   const [showMoveList, setShowMoveList] = useState(false);
   const [showPostGame, setShowPostGame] = useState(false);
 
-  // Point numbers toggle — persisted in localStorage
   // Selected candidate moves from consultation panel (shown as arrows on board)
   const [selectedCandidateMoves, setSelectedCandidateMoves] = useState<Move[] | null>(null);
 
+  // Point numbers toggle — persisted in localStorage
   const [showPointNumbers, setShowPointNumbers] = useState(() => {
     if (typeof window === "undefined") return true;
     const stored = localStorage.getItem("gammon-show-point-numbers");

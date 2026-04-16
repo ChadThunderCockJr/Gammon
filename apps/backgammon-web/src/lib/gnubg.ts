@@ -186,7 +186,7 @@ function boardToGnubg(
  *   - "bar" → from: 25 (black bar)
  *   - "off" → to: 25 (black bear-off direction)
  */
-function gnubgMovesToOurs(
+export function gnubgMovesToOurs(
   plays: { from: string; to: string }[],
   currentPlayer: Player,
   dice: [number, number],
