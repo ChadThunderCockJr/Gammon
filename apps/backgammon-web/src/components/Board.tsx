@@ -231,7 +231,6 @@ export function Board({
   hintMoves,
 }: BoardProps) {
   const flipped = myColor === "black";
-  const repeatDestRef = useRef<number | null>(null);
 
   // ─── Animation state ──────────────────────────────────────────
   const boardInnerRef = useRef<HTMLDivElement>(null);
@@ -309,24 +308,6 @@ export function Board({
     };
   }, []);
 
-  // ─── Auto-repeat: after legalMoves update, auto-play next move to same dest (once)
-  useEffect(() => {
-    const dest = repeatDestRef.current;
-    if (dest === null || !isMyTurn) {
-      repeatDestRef.current = null;
-      return;
-    }
-    repeatDestRef.current = null;
-    const candidates = legalMoves.filter((m) => m.to === dest);
-    if (candidates.length === 0) return;
-    let move = candidates[0];
-    if (activeDieIndex != null && dice) {
-      const preferred = candidates.find((m) => m.die === dice[activeDieIndex]);
-      if (preferred) move = preferred;
-    }
-    onMove(move.from, move.to);
-  }, [legalMoves, isMyTurn, onMove, activeDieIndex, dice]);
-
   // ─── Opponent move animation ──────────────────────────────────
   useEffect(() => {
     if (!lastOpponentMove) {
@@ -372,7 +353,6 @@ export function Board({
     const move = bearOffMoves.length > 0 ? pickMove(bearOffMoves) : pickMove(movesFrom);
     onMove(move.from, move.to);
     setHoldPoint(null);
-    repeatDestRef.current = move.to;
   }
 
   // Clicking a point directly (for backwards compat with rendering)
@@ -389,7 +369,6 @@ export function Board({
       if (target !== null) {
         onMove(holdPoint, target);
         setHoldPoint(null);
-        repeatDestRef.current = target;
         return;
       }
     }
@@ -409,7 +388,6 @@ export function Board({
       }
       onMove(best.from, best.to);
       setHoldPoint(null);
-      repeatDestRef.current = best.to;
     }
   }
 
