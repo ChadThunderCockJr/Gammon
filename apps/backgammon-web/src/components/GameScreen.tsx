@@ -11,6 +11,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import type { TurnRecord } from "@/hooks/useLocalGame";
 import type { CandidateMove } from "@/lib/analysis";
 import { isSoundMuted, setSoundMuted } from "@/lib/sounds";
+import { getEquityDiffColor } from "@/lib/equity-colors";
 import { TURN_TIMER_TICK_MS } from "@/lib/constants";
 
 interface GameScreenProps {
@@ -330,6 +331,101 @@ function TopNav({
 
 // ─── Consultation Panel ───────────────────────────────────────
 
+function ExpandedCandidatesList({
+  candidates,
+  myColor,
+  selectedIdx,
+  onSelect,
+}: {
+  candidates: CandidateMove[];
+  myColor?: Player;
+  selectedIdx: number | null;
+  onSelect: (idx: number, moves: Move[]) => void;
+}) {
+  const bestEq = candidates[0].equity;
+  const isBlack = myColor === "black";
+
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--color-border-subtle)",
+        padding: "6px 12px 8px",
+        maxHeight: 160,
+        overflowY: "auto",
+      }}
+    >
+      {candidates.map((c, i) => {
+        // Equity diff from best, from the player's perspective.
+        const diff = isBlack ? bestEq - c.equity : c.equity - bestEq;
+        const isSelected = selectedIdx === i;
+
+        return (
+          <button
+            key={i}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => onSelect(i, c.moves)}
+            className="flex items-center gap-2"
+            style={{
+              width: "100%",
+              textAlign: "left",
+              font: "inherit",
+              border: 0,
+              padding: "5px 4px",
+              borderBottom:
+                i < candidates.length - 1 ? "1px solid var(--color-border-subtle)" : "none",
+              cursor: "pointer",
+              background: isSelected ? "var(--color-analysis-gold-faint)" : "transparent",
+              borderRadius: 4,
+              transition: "background 0.1s",
+            }}
+          >
+            <span
+              style={{
+                width: 18,
+                textAlign: "center",
+                fontWeight: 700,
+                fontSize: "0.625rem",
+                color: i === 0 ? "var(--color-success)" : "var(--color-text-muted)",
+              }}
+            >
+              {i + 1}.
+            </span>
+            <span
+              style={{
+                flex: 1,
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.6875rem",
+                color: c.isPlayed ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                fontWeight: c.isPlayed ? 700 : 400,
+              }}
+            >
+              {c.notation || c.moves.map((m) => `${m.from}/${m.to}`).join(" ")}
+              {c.isPlayed && (
+                <span style={{ color: "var(--color-text-muted)", fontWeight: 400, marginLeft: 4 }}>
+                  ←
+                </span>
+              )}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.625rem",
+                fontWeight: 600,
+                minWidth: 52,
+                textAlign: "right",
+                color: getEquityDiffColor(i, diff),
+              }}
+            >
+              {i === 0 ? "Best" : diff >= 0 ? `+${diff.toFixed(3)}` : diff.toFixed(3)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ConsultationPanel({
   analysis,
   analysisLoading,
@@ -501,93 +597,18 @@ function ConsultationPanel({
       </div>
 
       {/* Expanded candidates list */}
-      {expanded && analysis && analysis.candidates.length > 0 && (() => {
-        // Show equity relative to best move (diff from #1)
-        const bestEq = analysis.candidates[0].equity;
-        const isBlack = myColor === "black";
-
-        return (
-          <div
-            style={{
-              borderTop: "1px solid var(--color-border-subtle)",
-              padding: "6px 12px 8px",
-              maxHeight: 160,
-              overflowY: "auto",
-            }}
-          >
-            {analysis.candidates.map((c, i) => {
-              // Equity diff from best, from the player's perspective
-              const diff = isBlack ? (bestEq - c.equity) : (c.equity - bestEq);
-              const isSelected = selectedIdx === i;
-
-              return (
-                <div
-                  key={i}
-                  onClick={() => {
-                    const next = isSelected ? null : i;
-                    setSelectedIdx(next);
-                    onSelectCandidate?.(next !== null ? c.moves : null);
-                  }}
-                  className="flex items-center gap-2"
-                  style={{
-                    padding: "5px 4px",
-                    borderBottom: i < analysis.candidates.length - 1 ? "1px solid var(--color-border-subtle)" : "none",
-                    cursor: "pointer",
-                    background: isSelected ? "var(--color-analysis-gold-faint)" : "transparent",
-                    borderRadius: 4,
-                    transition: "background 0.1s",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 18, textAlign: "center",
-                      fontWeight: 700,
-                      fontSize: "0.625rem",
-                      color: i === 0 ? "var(--color-success)" : "var(--color-text-muted)",
-                    }}
-                  >
-                    {i + 1}.
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "0.6875rem",
-                      color: c.isPlayed ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                      fontWeight: c.isPlayed ? 700 : 400,
-                    }}
-                  >
-                    {c.notation || c.moves.map((m) => `${m.from}/${m.to}`).join(" ")}
-                    {c.isPlayed && (
-                      <span style={{ color: "var(--color-text-muted)", fontWeight: 400, marginLeft: 4 }}>
-                        ←
-                      </span>
-                    )}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "0.625rem",
-                      fontWeight: 600,
-                      minWidth: 52,
-                      textAlign: "right",
-                      color: i === 0
-                        ? "var(--color-success)"
-                        : diff < -0.06
-                          ? "var(--color-danger)"
-                          : diff < -0.02
-                            ? "var(--color-warning)"
-                            : "var(--color-text-muted)",
-                    }}
-                  >
-                    {i === 0 ? "Best" : diff >= 0 ? `+${diff.toFixed(3)}` : diff.toFixed(3)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })()}
+      {expanded && analysis && analysis.candidates.length > 0 && (
+        <ExpandedCandidatesList
+          candidates={analysis.candidates}
+          myColor={myColor}
+          selectedIdx={selectedIdx}
+          onSelect={(idx, moves) => {
+            const next = selectedIdx === idx ? null : idx;
+            setSelectedIdx(next);
+            onSelectCandidate?.(next !== null ? moves : null);
+          }}
+        />
+      )}
     </div>
   );
 }

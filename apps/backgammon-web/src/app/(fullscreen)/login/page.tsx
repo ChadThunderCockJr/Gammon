@@ -249,7 +249,17 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isConnected) {
-      router.push("/");
+      // Resume any pending destination stored before the login redirect (e.g. /join/<code>).
+      const dest =
+        typeof window !== "undefined"
+          ? sessionStorage.getItem("postLoginPath")
+          : null;
+      if (dest) {
+        sessionStorage.removeItem("postLoginPath");
+        router.replace(dest);
+      } else {
+        router.replace("/");
+      }
     }
   }, [isConnected, router]);
 

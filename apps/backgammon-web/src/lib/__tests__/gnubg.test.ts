@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { gnubgMovesToOurs } from "../gnubg";
 
 // Regression suite for the GNUBG over-bearing die-mapping bug
@@ -97,5 +97,37 @@ describe("gnubgMovesToOurs — bear-off die assignment", () => {
     );
     expect(moves[0].die).toBe(3);
     expect(moves[1].die).toBe(6);
+  });
+});
+
+describe("gnubgMovesToOurs — unmatched-die reporting", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("warns in production when a normal-move die is not in the roll", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Distance 6, but dice are [4, 5]. Die 6 isn't available.
+    gnubgMovesToOurs([{ from: "8", to: "2" }], "white", [4, 5]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toContain("normal move die not in roll");
+  });
+
+  it("warns in production when a bear-off has no die >= source point", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Trying to bear off from point 6 with dice [1, 2] (neither reaches).
+    gnubgMovesToOurs([{ from: "6", to: "off" }], "white", [1, 2]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toContain("bear-off without matching die");
+  });
+
+  it("throws in development when a die can't be matched", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(() =>
+      gnubgMovesToOurs([{ from: "6", to: "off" }], "white", [1, 2]),
+    ).toThrow(/unmatched die/);
   });
 });

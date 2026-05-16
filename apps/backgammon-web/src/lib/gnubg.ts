@@ -198,6 +198,20 @@ export function gnubgMovesToOurs(
     ? [dice[0], dice[0], dice[0], dice[0]]
     : [dice[0], dice[1]];
 
+  const consumeDie = (d: number): boolean => {
+    const idx = availableDice.indexOf(d);
+    if (idx === -1) return false;
+    availableDice.splice(idx, 1);
+    return true;
+  };
+
+  const reportUnmatched = (reason: string, play: { from: string; to: string }) => {
+    const ctx = { reason, play, dice, availableDice: [...availableDice], currentPlayer };
+    const msg = `[gnubg] unmatched die for play: ${JSON.stringify(ctx)}`;
+    if (process.env.NODE_ENV === "development") throw new Error(msg);
+    console.warn(msg);
+  };
+
   return plays.map((play) => {
     let from: number;
     let to: number;
@@ -225,32 +239,25 @@ export function gnubgMovesToOurs(
     const gnubgFrom = parseInt(play.from, 10);
 
     if (play.to === "off") {
-      // Bear-off: the die is >= gnubgFrom (source point in X-coords).
-      // For exact bear-off, die === gnubgFrom. For over-bear, die > gnubgFrom.
-      // Find the matching die from available dice.
-      const exactIdx = availableDice.indexOf(gnubgFrom);
-      if (exactIdx !== -1) {
-        // Exact bear-off die available
+      // Bear-off: exact match preferred; otherwise smallest available die >= gnubgFrom.
+      if (consumeDie(gnubgFrom)) {
         die = gnubgFrom;
-        availableDice.splice(exactIdx, 1);
       } else {
-        // Over-bear: find the smallest available die >= gnubgFrom
-        const overBearIdx = availableDice.findIndex(d => d >= gnubgFrom);
+        const overBearIdx = availableDice.findIndex((d) => d >= gnubgFrom);
         if (overBearIdx !== -1) {
           die = availableDice[overBearIdx];
           availableDice.splice(overBearIdx, 1);
         } else {
-          die = gnubgFrom; // shouldn't happen, fallback
+          reportUnmatched("bear-off without matching die", play);
+          die = gnubgFrom; // best-effort fallback
         }
       }
     } else if (play.from === "bar") {
       die = 25 - parseInt(play.to, 10);
-      const idx = availableDice.indexOf(die);
-      if (idx !== -1) availableDice.splice(idx, 1);
+      if (!consumeDie(die)) reportUnmatched("bar entry die not in roll", play);
     } else {
       die = gnubgFrom - parseInt(play.to, 10);
-      const idx = availableDice.indexOf(die);
-      if (idx !== -1) availableDice.splice(idx, 1);
+      if (!consumeDie(die)) reportUnmatched("normal move die not in roll", play);
     }
 
     return { from, to, die };
