@@ -1,4 +1,4 @@
-FROM node:20-alpine AS base
+FROM node:20.19.5-bookworm-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 
 FROM base AS build
@@ -35,17 +35,14 @@ COPY --from=build /app/packages/backgammon-core/package.json ./packages/backgamm
 
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
-# tsx is required at runtime because backgammon-core is a raw TypeScript
-# workspace package with "main": "./src/index.ts" — Node cannot resolve it
-# without a TypeScript-aware loader.
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN pnpm add -g tsx@4
 
-COPY --from=build /app/apps/backgammon-server/dist/ ./apps/backgammon-server/dist/
-COPY --from=build /app/packages/backgammon-core/ ./packages/backgammon-core/
+COPY --chown=node:node --from=build /app/apps/backgammon-server/dist/ ./apps/backgammon-server/dist/
+COPY --chown=node:node --from=build /app/packages/backgammon-core/ ./packages/backgammon-core/
 
 WORKDIR /app/apps/backgammon-server
+USER node
 EXPOSE 3001
 ENV PORT=3001
-CMD ["tsx", "dist/index.js"]
+CMD ["node", "dist/index.js"]

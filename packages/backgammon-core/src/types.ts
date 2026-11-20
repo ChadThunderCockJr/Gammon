@@ -40,8 +40,8 @@ export interface MoveRecord {
 // Constants
 export const WHITE_BAR = 0;
 export const BLACK_BAR = 25;
-export const BEAR_OFF_WHITE = 25; // white bears off "past" point 24
-export const BEAR_OFF_BLACK = 0; // black bears off "past" point 1
+export const BEAR_OFF_WHITE = 0; // white bears off past point 1
+export const BEAR_OFF_BLACK = 25; // black bears off past point 24
 export const TOTAL_CHECKERS = 15;
 export const NUM_POINTS = 24;
 

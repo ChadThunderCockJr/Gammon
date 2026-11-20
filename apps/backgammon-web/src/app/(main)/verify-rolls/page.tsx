@@ -9,7 +9,8 @@ import type { MoveRecord } from "@xion-beginner/backgammon-core";
 import { API_BASE } from "@/lib/api";
 import type { MatchResult } from "@/lib/api";
 import { getLocalMatches, type AIMatchRecord } from "@/lib/local-stats";
-import { verifyDiceRoll, DRAND_CHAIN_HASH, type DiceProof, type DiceProofsResponse } from "@/lib/dice-verify";
+import { verifyDiceRoll, DRAND_CHAIN_HASH, type AuditDiceRoll, type DiceProof, type DiceProofsResponse } from "@/lib/dice-verify";
+import { authenticatedFetch } from "@/lib/server-session";
 
 // ─── Icons ─────────────────────────────────────────────────────────
 
@@ -137,7 +138,7 @@ function RollLog({
   diceProofs,
 }: {
   moveHistory: MoveRecord[];
-  diceProofs: DiceProof[] | null;
+  diceProofs: AuditDiceRoll[] | null;
 }) {
   const [verifyResults, setVerifyResults] = useState<Map<number, { status: VerifyStatus; details?: string }>>(new Map());
   const [verifyingAll, setVerifyingAll] = useState(false);
@@ -160,6 +161,7 @@ function RollLog({
     if (!diceProofs || diceProofs.length === 0) return;
     setVerifyingAll(true);
     for (const proof of diceProofs) {
+      if ("proofStatus" in proof) continue;
       await verifyOne(proof);
     }
     setVerifyingAll(false);
@@ -174,7 +176,7 @@ function RollLog({
   }
 
   // Build a map from turnNumber to proof for quick lookup
-  const proofMap = new Map<number, DiceProof>();
+  const proofMap = new Map<number, AuditDiceRoll>();
   if (diceProofs) {
     for (const proof of diceProofs) {
       proofMap.set(proof.turnNumber, proof);
@@ -264,20 +266,26 @@ function RollLog({
                     {diceProofs && (
                       <td style={tdStyle}>
                         {proof ? (
-                          <a
-                            href={`https://api.drand.sh/${DRAND_CHAIN_HASH}/public/${proof.drandRound}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                              fontSize: "0.625rem",
-                              fontFamily: "var(--font-mono)",
-                              color: "var(--color-gold-primary)",
-                              textDecoration: "none",
-                            }}
-                            title={`drand round #${proof.drandRound}`}
-                          >
-                            #{proof.drandRound}
-                          </a>
+                          "proofStatus" in proof ? (
+                            <span style={{ fontSize: "0.625rem", color: "var(--color-warning)" }}>
+                              unavailable
+                            </span>
+                          ) : (
+                            <a
+                              href={`https://api.drand.sh/${DRAND_CHAIN_HASH}/public/${proof.drandRound}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                fontSize: "0.625rem",
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--color-gold-primary)",
+                                textDecoration: "underline",
+                              }}
+                              title={`drand round #${proof.drandRound}`}
+                            >
+                              #{proof.drandRound}
+                            </a>
+                          )
                         ) : (
                           <span style={{ fontSize: "0.625rem", color: "var(--color-text-faint)" }}>—</span>
                         )}
@@ -286,7 +294,11 @@ function RollLog({
                     {diceProofs && (
                       <td style={tdStyle}>
                         {proof ? (
-                          vResult ? (
+                          "proofStatus" in proof ? (
+                            <span style={{ fontSize: "0.625rem", color: "var(--color-warning)" }}>
+                              Unverifiable
+                            </span>
+                          ) : vResult ? (
                             <VerifyBadge status={vResult.status} details={vResult.details} />
                           ) : (
                             <button
@@ -354,38 +366,40 @@ const tdStyle: React.CSSProperties = {
 function MatchRow({ match }: { match: MatchResult }) {
   const [expanded, setExpanded] = useState(false);
   const [moveHistory, setMoveHistory] = useState<MoveRecord[] | null>(null);
-  const [diceProofs, setDiceProofs] = useState<DiceProof[] | null>(null);
+  const [diceProofs, setDiceProofs] = useState<AuditDiceRoll[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
   const toggleExpand = useCallback(async () => {
-    if (expanded) {
+    if (expanded && !auditError) {
       setExpanded(false);
       return;
     }
     setExpanded(true);
-    if (moveHistory) return; // already loaded
+    if (moveHistory) return;
     setLoading(true);
+    setAuditError(null);
     try {
-      const [histRes, proofsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/game/${match.gameId}/history`),
-        fetch(`${API_BASE}/api/game/${match.gameId}/dice-proofs`),
+      const [historyResponse, proofsResponse] = await Promise.all([
+        authenticatedFetch(`/api/game/${match.gameId}/history`),
+        authenticatedFetch(`/api/game/${match.gameId}/dice-proofs`),
       ]);
-      if (histRes.ok) {
-        const data = await histRes.json();
-        setMoveHistory(data.moveHistory);
-      } else {
-        setMoveHistory([]);
+      if (!historyResponse.ok || !proofsResponse.ok) {
+        throw new Error("The durable game audit is temporarily unavailable.");
       }
-      if (proofsRes.ok) {
-        const data: DiceProofsResponse = await proofsRes.json();
-        setDiceProofs(data.rolls);
+      const history = await historyResponse.json() as { moveHistory?: unknown };
+      const proofs = await proofsResponse.json() as DiceProofsResponse;
+      if (!Array.isArray(history.moveHistory) || !Array.isArray(proofs.rolls)) {
+        throw new Error("The durable game audit response was invalid.");
       }
+      setMoveHistory(history.moveHistory as MoveRecord[]);
+      setDiceProofs(proofs.rolls);
     } catch {
-      setMoveHistory([]);
+      setAuditError("The durable game audit is temporarily unavailable.");
     } finally {
       setLoading(false);
     }
-  }, [expanded, moveHistory, match.gameId]);
+  }, [auditError, expanded, moveHistory, match.gameId]);
 
   const date = new Date(match.timestamp);
   const dateStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -393,6 +407,8 @@ function MatchRow({ match }: { match: MatchResult }) {
   return (
     <div style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={toggleExpand}
         style={{
           width: "100%",
@@ -428,6 +444,13 @@ function MatchRow({ match }: { match: MatchResult }) {
             <p style={{ fontSize: "0.75rem", color: "var(--color-text-faint)", textAlign: "center", padding: "12px 0" }}>
               Loading roll history...
             </p>
+          ) : auditError ? (
+            <div role="alert" className="py-3 text-center">
+              <p className="text-xs text-[var(--color-danger)]">{auditError}</p>
+              <button type="button" className="mt-2 min-h-11 underline" onClick={() => void toggleExpand()}>
+                Retry audit
+              </button>
+            </div>
           ) : moveHistory ? (
             <RollLog moveHistory={moveHistory} diceProofs={diceProofs} />
           ) : null}
@@ -499,31 +522,34 @@ export default function VerifyRollsPage() {
   const [matches, setMatches] = useState<MatchResult[]>([]);
   const [aiMatches, setAiMatches] = useState<AIMatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
-    // Load local AI matches immediately
     setAiMatches(getLocalMatches(50));
-
+    setLoading(true);
+    setOnlineError(null);
     if (!address) {
       setLoading(false);
       return;
     }
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/matches/${address}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) setMatches(data.matches);
-        }
+        const response = await fetch(`${API_BASE}/api/matches/${address}`);
+        if (!response.ok) throw new Error("Online match records are temporarily unavailable.");
+        const data = await response.json() as { matches?: unknown };
+        if (!cancelled) setMatches(Array.isArray(data.matches) ? data.matches as MatchResult[] : []);
       } catch {
-        // ignore
+        if (!cancelled) {
+          setOnlineError("Online match records are temporarily unavailable.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [address]);
+  }, [address, reloadVersion]);
 
   // Merge and sort all matches by timestamp (newest first)
   const allMatches = [
@@ -560,22 +586,12 @@ export default function VerifyRollsPage() {
             </h2>
           </div>
           <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", margin: 0, lineHeight: 1.6 }}>
-            All dice rolls use <strong>drand verifiable randomness</strong> from the{" "}
-            <a
-              href="https://drand.love"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: "var(--color-gold-primary)", textDecoration: "none" }}
-            >
-              League of Entropy
-            </a>
-            . Each roll fetches a BLS-signed random beacon published every 3 seconds by a distributed
-            network of independent organizations. The server cannot influence the randomness — it can only
-            choose which round to use. Dice are derived as{" "}
-            <code style={{ fontSize: "0.75rem", background: "var(--color-bg-subtle)", padding: "1px 4px", borderRadius: 3 }}>
-              SHA256(randomness + white + black + turn)
-            </code>
-            . Click &quot;Verify All&quot; on any match to cryptographically verify every roll client-side.
+            Before an online roll, Gammon records a future drand round and the complete game,
+            player, rules, turn, and roller context. After that round is published, the client can
+            verify its BLS signature and reproduce the dice with rejection sampling. A cash game
+            pauses for review if its proof is unavailable or invalid; free-play fallback rolls are
+            labeled unverifiable rather than verified. Open a match below to inspect its recorded
+            proof status and inputs.
           </p>
         </Card>
 
@@ -587,18 +603,33 @@ export default function VerifyRollsPage() {
             <p style={{ fontSize: "0.8125rem", color: "var(--color-text-faint)", textAlign: "center", padding: "24px 0" }}>
               Loading matches...
             </p>
+          ) : onlineError && aiMatches.length === 0 ? (
+            <div role="alert" className="py-5 text-center">
+              <p className="text-sm text-[var(--color-danger)]">{onlineError}</p>
+              <button type="button" className="btn-secondary mt-3 min-h-11" onClick={() => setReloadVersion((value) => value + 1)}>
+                Retry online history
+              </button>
+            </div>
           ) : !hasAnyMatches ? (
             <p style={{ fontSize: "0.8125rem", color: "var(--color-text-faint)", textAlign: "center", padding: "24px 0" }}>
               No matches found. Play a game to see your roll history here.
             </p>
           ) : (
-            allMatches.map((entry) =>
-              entry.type === "online" ? (
-                <MatchRow key={(entry.data as MatchResult).gameId} match={entry.data as MatchResult} />
-              ) : (
-                <AIMatchRow key={(entry.data as AIMatchRecord).id} match={entry.data as AIMatchRecord} />
-              )
-            )
+            <>
+              {onlineError && (
+                <div role="status" className="mb-3 rounded border border-[var(--color-border-subtle)] p-3 text-sm text-[var(--color-text-secondary)]">
+                  {onlineError} Local AI records remain available.{" "}
+                  <button type="button" className="underline" onClick={() => setReloadVersion((value) => value + 1)}>Retry</button>
+                </div>
+              )}
+              {allMatches.map((entry) =>
+                entry.type === "online" ? (
+                  <MatchRow key={(entry.data as MatchResult).gameId} match={entry.data as MatchResult} />
+                ) : (
+                  <AIMatchRow key={(entry.data as AIMatchRecord).id} match={entry.data as AIMatchRecord} />
+                )
+              )}
+            </>
           )}
         </Card>
       </div>

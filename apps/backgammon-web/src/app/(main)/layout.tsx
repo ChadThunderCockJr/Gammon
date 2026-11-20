@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout";
 import { useAuth } from "@/hooks/useAuth";
 import { SocialProvider, useSocialContext } from "@/contexts/SocialContext";
 import { FocusTrap } from "@/components/ui/FocusTrap";
+import { withReturnTo } from "@/lib/return-to";
 
 export default function MainLayout({
   children,
@@ -13,13 +14,15 @@ export default function MainLayout({
   children: React.ReactNode;
 }) {
   const { isConnected, isConnecting } = useAuth();
-  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     if (!isConnecting && !isConnected) {
-      router.replace("/login");
+      const query = searchParams.toString();
+      window.location.replace(withReturnTo("/login", `${pathname}${query ? `?${query}` : ""}`));
     }
-  }, [isConnected, isConnecting, router]);
+  }, [isConnected, isConnecting, pathname, searchParams]);
 
   if (isConnecting) {
     return (
@@ -62,8 +65,13 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
   const gameRouter = useRouter();
   const social = useSocialContext();
   const { username, usernameError, connected, setUsername, acceptedGameId, clearAcceptedGame } = social;
+  const { logout } = useAuth();
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const usernameValid = /^[A-Za-z0-9_]{3,20}$/.test(input);
+  const showInputError = attempted && !usernameValid;
 
   // Navigate to game when a challenge is accepted
   useEffect(() => {
@@ -74,19 +82,26 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
   }, [acceptedGameId, clearAcceptedGame, gameRouter]);
 
   const handleSubmit = useCallback(() => {
-    const trimmed = input.trim();
-    if (trimmed.length >= 3) {
-      setUsername(trimmed);
-      setSubmitted(true);
+    setAttempted(true);
+    if (!usernameValid) {
+      inputRef.current?.focus();
+      return;
     }
-  }, [input, setUsername]);
+    setUsername(input);
+    setSubmitted(true);
+  }, [input, setUsername, usernameValid]);
 
-  // Show prompt if connected, no username, and we haven't just submitted successfully
-  const showPrompt = connected && !username && !(submitted && !usernameError);
+  // Keep the dialog open until the server confirms the username.
+  const showPrompt = connected && !username;
 
-  // Reset submitted state when error comes back so user can retry
+  // Reset submitted state after the server rejects the username so the user can retry.
   useEffect(() => {
-    if (usernameError) setSubmitted(false);
+    if (!usernameError) return;
+    const frame = window.requestAnimationFrame(() => {
+      setSubmitted(false);
+      inputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [usernameError]);
 
   return (
@@ -158,6 +173,7 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
               Choose a Username
             </h2>
             <p
+              id="username-rules"
               style={{
                 fontSize: "0.8125rem",
                 color: "var(--color-text-muted)",
@@ -167,16 +183,21 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
                 lineHeight: 1.5,
               }}
             >
-              Pick a unique username so friends can find you.
-              3-20 characters, letters, numbers, and underscores.
+              Pick a unique public username so friends can find you.
+              Use 3-20 letters, numbers, or underscores. Display names can change later;
+              username changes currently require support.
             </p>
+            <label htmlFor="username" style={{ display: "block", fontSize: "0.75rem", color: "var(--color-text-secondary)", marginBottom: 6 }}>Username</label>
             <input
+              ref={inputRef}
+              id="username"
               type="text"
               placeholder="e.g. BackgammonKing"
               value={input}
-              onChange={(e) => setInput(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              maxLength={20}
+              aria-invalid={Boolean(usernameError) || showInputError}
+              aria-describedby="username-rules username-counter username-error"
               style={{
                 width: "100%",
                 padding: "12px 16px",
@@ -198,12 +219,18 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
                 if (!usernameError) e.target.style.borderColor = "var(--color-gold-primary)";
               }}
               onBlur={(e) => {
+                setAttempted(true);
                 if (!usernameError) e.target.style.borderColor = "var(--color-border-subtle)";
               }}
               autoFocus
             />
-            {usernameError && (
+            <div id="username-counter" aria-live="polite" style={{ marginTop: 6, textAlign: "right", fontSize: "0.6875rem", color: input.length > 20 ? "var(--color-danger)" : "var(--color-text-muted)" }}>
+              {input.length}/20 characters
+            </div>
+            {(usernameError || showInputError) && (
               <div
+                id="username-error"
+                role="alert"
                 style={{
                   fontSize: "0.75rem",
                   color: "var(--color-danger)",
@@ -213,34 +240,41 @@ function UsernameGate({ children }: { children: React.ReactNode }) {
                   fontWeight: 600,
                 }}
               >
-                {usernameError}
+                {usernameError || "Use exactly 3–20 letters, numbers, or underscores; remove spaces and unsupported characters."}
               </div>
             )}
             <button
               onClick={handleSubmit}
-              disabled={input.trim().length < 3}
+              disabled={!usernameValid || submitted}
               style={{
                 width: "100%",
                 padding: "14px 0",
                 borderRadius: 8,
                 border: "none",
                 background:
-                  input.trim().length >= 3
+                  usernameValid && !submitted
                     ? "var(--color-gold-primary)"
                     : "var(--color-bg-subtle)",
                 color:
-                  input.trim().length >= 3
+                  usernameValid && !submitted
                     ? "var(--color-accent-fg)"
                     : "var(--color-text-faint)",
                 fontSize: "0.9375rem",
                 fontWeight: 700,
-                cursor: input.trim().length >= 3 ? "pointer" : "not-allowed",
+                cursor: usernameValid && !submitted ? "pointer" : "not-allowed",
                 fontFamily: "var(--font-body)",
                 marginTop: 16,
                 transition: "all 0.15s ease",
               }}
             >
-              Continue
+              {submitted ? "Saving…" : "Continue"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { void logout(); gameRouter.replace("/login"); }}
+              style={{ width: "100%", minHeight: 44, marginTop: 8, border: 0, background: "transparent", color: "var(--color-text-secondary)", textDecoration: "underline", cursor: "pointer" }}
+            >
+              Cancel and log out
             </button>
             </div>
           </FocusTrap>

@@ -6,5 +6,8 @@ out
 target
 artifacts
 .git
+**/.env
+**/.env.*
+!**/.env.example
 *.md
 !pnpm-workspace.yaml

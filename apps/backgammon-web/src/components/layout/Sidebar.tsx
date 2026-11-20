@@ -193,6 +193,7 @@ export function Sidebar() {
         height: "100dvh",
         position: "sticky",
         top: 0,
+        overflowY: "auto",
       }}
     >
       {/* Brand */}
@@ -233,7 +234,8 @@ export function Sidebar() {
       {/* Primary Navigation */}
       <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <NavItem icon={Icons.home} label="Home" href="/" active={isActive("/")} />
-        <NavItem icon={Icons.play} label="Play" href="/matchmaking" active={isActive("/matchmaking")} />
+        <NavItem icon={Icons.play} label="Find an opponent" href="/matchmaking" active={isActive("/matchmaking")} />
+        <NavItem icon={Icons.users} label="Private invite" href="/create-match" active={isActive("/create-match")} />
         <NavItem icon={Icons.trophy} label="Tournaments" href="/tournaments" active={isActive("/tournaments")} />
         <NavItem icon={Icons.users} label="Social" href="/social" active={isActive("/social")} />
         {!isNativeApp && (
@@ -250,8 +252,26 @@ export function Sidebar() {
       />
 
       {/* Secondary Navigation */}
-      <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <nav aria-label="Resources" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <NavItem icon={Icons.chart} label="Leaderboard" href="/leaderboard" active={isActive("/leaderboard")} />
+        {!isNativeApp && (
+          <NavItem icon={Icons.wallet} label="Activity" href="/activity" active={isActive("/activity")} />
+        )}
+        <NavItem icon={Icons.brain} label="Verify rolls" href="/verify-rolls" active={isActive("/verify-rolls")} />
+        <NavItem icon={Icons.settings} label="Responsible play" href="/responsible-play" active={isActive("/responsible-play")} />
         <NavItem icon={Icons.settings} label="Settings" href="/settings" active={isActive("/settings")} />
+      </nav>
+
+      <nav aria-label="Legal and support" style={{ display: "flex", gap: 12, padding: "12px 16px 0", flexWrap: "wrap" }}>
+        {[
+          ["/support", "Support"],
+          ["/terms", "Terms"],
+          ["/privacy", "Privacy"],
+        ].map(([href, label]) => (
+          <Link key={href} href={href} style={{ color: "var(--color-text-muted)", fontSize: "0.6875rem" }}>
+            {label}
+          </Link>
+        ))}
       </nav>
 
       {/* User Card */}
@@ -290,7 +310,7 @@ export function Sidebar() {
                 fontWeight: 500,
               }}
             >
-              1,847
+              Profile
             </div>
           </div>
         </Link>

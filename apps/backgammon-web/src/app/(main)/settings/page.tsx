@@ -14,30 +14,8 @@ const BOARD_THEMES = [
   { id: "lux", label: "Lux" },
 ];
 
-const NOTATION_STYLES = [
-  { id: "international", label: "International" },
-  { id: "american", label: "American" },
-];
 
 // ─── Icons ─────────────────────────────────────────────────────────
-function ShieldIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="var(--color-text-secondary)" strokeWidth="1.5">
-      <path d="M8 1.5L3 4v3c0 3 2 5.5 5 6.5 3-1 5-3.5 5-6.5V4L8 1.5z" />
-      <path d="M6 8l1.5 1.5L10.5 6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function WalletIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="var(--color-text-muted)" strokeWidth="1.5">
-      <rect x="2" y="5" width="16" height="11" rx="2" />
-      <path d="M14 10.5a1 1 0 100 2 1 1 0 000-2z" fill="var(--color-text-muted)" />
-      <path d="M2 8h16" />
-    </svg>
-  );
-}
 
 function CheckIcon() {
   return (
@@ -56,23 +34,6 @@ function CopyIcon() {
   );
 }
 
-// ─── Toggle Switch ─────────────────────────────────────────────────
-function ToggleSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
-  return (
-    <div onClick={onToggle} style={{
-      width: 40, height: 22, borderRadius: 11, cursor: "pointer",
-      background: on ? "var(--color-gold-primary)" : "var(--color-bg-subtle)",
-      position: "relative", transition: "background 0.15s ease", flexShrink: 0,
-    }}>
-      <div style={{
-        width: 18, height: 18, borderRadius: "50%",
-        background: "var(--color-bg-elevated)", position: "absolute", top: 2,
-        left: on ? 20 : 2, transition: "left 0.15s ease",
-        boxShadow: "var(--shadow-card)",
-      }} />
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // MAIN — SETTINGS PAGE
@@ -84,16 +45,10 @@ export default function SettingsPage() {
 
   const { theme, setTheme } = useTheme();
   const [displayName, setDisplayName] = useState("");
+  const [pendingDisplayName, setPendingDisplayName] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [notationStyle, setNotationStyle] = useState("international");
-  const [autoConfirm, setAutoConfirm] = useState(false);
-  const [notifications, setNotifications] = useState({
-    matchInvites: true,
-    friendRequests: true,
-    tournamentAlerts: false,
-  });
-
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const handleReplayTutorial = useCallback(() => {
     try {
       localStorage.removeItem("gammon-tutorial-completed");
@@ -110,20 +65,52 @@ export default function SettingsPage() {
     }
   }, [social.displayName]);
 
+  useEffect(() => {
+    if (!pendingDisplayName || social.displayName !== pendingDisplayName) return;
+    setPendingDisplayName(null);
+    setSaved(true);
+  }, [pendingDisplayName, social.displayName]);
+
+  useEffect(() => {
+    if (!saved) return;
+    const timer = window.setTimeout(() => setSaved(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
+
+  useEffect(() => {
+    if (!pendingDisplayName) return;
+    const timer = window.setTimeout(() => {
+      setPendingDisplayName(null);
+      setSettingsError("The display name was not confirmed. Check your connection and try again.");
+    }, 10_000);
+    return () => window.clearTimeout(timer);
+  }, [pendingDisplayName]);
+
   const handleSaveDisplayName = useCallback(() => {
     const trimmed = displayName.trim();
-    if (trimmed && trimmed !== social.displayName) {
-      social.setDisplayName(trimmed);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+    setSettingsError(null);
+    if (!trimmed || trimmed.length > 50) {
+      setSettingsError("Display names must contain 1–50 characters.");
+      return;
     }
+    if (!social.connected) {
+      setSettingsError("Reconnect your wallet session before saving.");
+      return;
+    }
+    if (trimmed === social.displayName) return;
+    setPendingDisplayName(trimmed);
+    social.setDisplayName(trimmed);
   }, [displayName, social]);
 
-  const handleCopyAddress = useCallback(() => {
-    if (address) {
-      navigator.clipboard.writeText(address);
+  const handleCopyAddress = useCallback(async () => {
+    if (!address) return;
+    setSettingsError(null);
+    try {
+      await navigator.clipboard.writeText(address);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setSettingsError("The wallet address could not be copied. Select it and copy manually.");
     }
   }, [address]);
 
@@ -170,11 +157,16 @@ export default function SettingsPage() {
 
             {/* Address */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{
-                fontSize: "0.6875rem", fontWeight: 600, color: "var(--color-text-muted)",
-                textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6,
-              }}>Wallet Address</div>
-              <div style={{
+              <label
+                htmlFor="settings-wallet-address"
+                style={{
+                  display: "block", fontSize: "0.6875rem", fontWeight: 600, color: "var(--color-text-muted)",
+                  textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6,
+                }}
+              >
+                Wallet address
+              </label>
+              <div id="settings-wallet-address" style={{
                 display: "flex", alignItems: "center", gap: 8,
                 padding: "10px 14px", borderRadius: 6,
                 border: "1.5px solid var(--color-border-subtle)", background: "var(--color-bg-base)",
@@ -187,6 +179,8 @@ export default function SettingsPage() {
                   {address || "Not connected"}
                 </span>
                 <button
+                  type="button"
+                  disabled={!address}
                   onClick={handleCopyAddress}
                   style={{
                     background: "none", border: "none", cursor: "pointer",
@@ -194,6 +188,7 @@ export default function SettingsPage() {
                     display: "flex", alignItems: "center", gap: 4,
                     fontSize: "0.6875rem", fontWeight: 600, fontFamily: "var(--font-body)",
                     padding: "2px 6px", borderRadius: 4,
+                    minHeight: 44,
                     transition: "color 0.15s ease",
                   }}
                 >
@@ -204,13 +199,23 @@ export default function SettingsPage() {
 
             {/* Display Name */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{
-                fontSize: "0.6875rem", fontWeight: 600, color: "var(--color-text-muted)",
-                textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6,
-              }}>Display Name</div>
+              <label
+                htmlFor="settings-display-name"
+                style={{
+                  display: "block", fontSize: "0.6875rem", fontWeight: 600, color: "var(--color-text-muted)",
+                  textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6,
+                }}
+              >
+                Display name
+              </label>
               <div style={{ display: "flex", gap: 8 }}>
                 <input
-                  type="text" value={displayName}
+                  id="settings-display-name"
+                  type="text"
+                  value={displayName}
+                  maxLength={50}
+                  aria-invalid={Boolean(settingsError)}
+                  aria-describedby={settingsError ? "settings-display-name-help settings-display-name-error" : "settings-display-name-help"}
                   placeholder="Enter a display name..."
                   onChange={(e) => setDisplayName(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSaveDisplayName()}
@@ -220,33 +225,43 @@ export default function SettingsPage() {
                     fontSize: "0.875rem", fontWeight: 600, color: "var(--color-text-primary)", outline: "none",
                     fontFamily: "var(--font-body)",
                     boxSizing: "border-box",
+                    minHeight: 44,
                     transition: "border-color 0.2s",
                   }}
                   onFocus={(e) => { e.target.style.borderColor = "var(--color-gold-primary)"; }}
-                  onBlur={(e) => { e.target.style.borderColor = "var(--color-border-subtle)"; handleSaveDisplayName(); }}
+                  onBlur={(e) => { e.target.style.borderColor = "var(--color-border-subtle)"; }}
                 />
                 <button
+                  type="button"
                   onClick={handleSaveDisplayName}
+                  disabled={Boolean(pendingDisplayName)}
                   style={{
                     padding: "10px 20px", borderRadius: 6,
                     border: "none",
                     background: saved ? "var(--color-success)" : "var(--color-gold-primary)",
                     color: "var(--color-accent-fg)",
-                    fontSize: "0.8125rem", fontWeight: 700, cursor: "pointer",
+                    fontSize: "0.8125rem", fontWeight: 700, cursor: pendingDisplayName ? "wait" : "pointer",
                     fontFamily: "var(--font-body)",
                     transition: "background 0.15s ease",
                     display: "flex", alignItems: "center", gap: 6,
                     flexShrink: 0,
+                    minHeight: 44,
                   }}
                 >
-                  {saved ? <><CheckIcon /> Saved</> : "Save"}
+                  {saved ? <><CheckIcon /> Saved</> : pendingDisplayName ? "Saving…" : "Save"}
                 </button>
               </div>
-              <div style={{
+              <div id="settings-display-name-help" style={{
                 fontSize: "0.6875rem", color: "var(--color-text-faint)", marginTop: 6,
               }}>
-                This is how other players see you in friend lists and matches
+                This is how other players see you in friend lists and matches. {displayName.length}/50 characters.
+                <span aria-live="polite">{saved ? " Display name saved." : pendingDisplayName ? " Saving display name." : ""}</span>
               </div>
+              {settingsError && (
+                <p id="settings-display-name-error" role="alert" style={{ color: "var(--color-danger)", fontSize: "0.75rem", margin: "8px 0 0" }}>
+                  {settingsError}
+                </p>
+              )}
             </div>
 
             {/* Logout */}
@@ -255,6 +270,7 @@ export default function SettingsPage() {
             }}>
               <button
                 onClick={logout}
+                type="button"
                 style={{
                   padding: "10px 20px", borderRadius: 6,
                   border: "1.5px solid var(--color-danger)",
@@ -262,6 +278,7 @@ export default function SettingsPage() {
                   color: "var(--color-danger)",
                   fontSize: "0.8125rem", fontWeight: 600, cursor: "pointer",
                   fontFamily: "var(--font-body)",
+                  minHeight: 44,
                 }}
               >
                 Sign Out
@@ -277,6 +294,7 @@ export default function SettingsPage() {
                 fontSize: "0.75rem", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 8,
               }}>Theme</div>
               <SegmentToggle
+                ariaLabel="Color theme"
                 segments={BOARD_THEMES}
                 activeId={theme}
                 onSelect={(id) => setTheme(id as "light" | "dark" | "lux")}
@@ -289,58 +307,7 @@ export default function SettingsPage() {
             </div>
           </Card>
 
-          {/* ═══ GAME PREFERENCES ═════════════════════════════ */}
-          <Card style={{ marginBottom: 16 }}>
-            <SectionLabel>Game Preferences</SectionLabel>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{
-                fontSize: "0.75rem", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 8,
-              }}>Notation Style</div>
-              <SegmentToggle
-                segments={NOTATION_STYLES}
-                activeId={notationStyle}
-                onSelect={setNotationStyle}
-              />
-            </div>
-            <div style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-            }}>
-              <div>
-                <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--color-text-primary)" }}>Auto-Confirm Moves</div>
-                <div style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)", marginTop: 2 }}>
-                  Automatically confirm obvious forced moves
-                </div>
-              </div>
-              <ToggleSwitch on={autoConfirm} onToggle={() => setAutoConfirm(!autoConfirm)} />
-            </div>
-          </Card>
-
-          {/* ═══ NOTIFICATIONS ════════════════════════════════ */}
-          <Card style={{ marginBottom: 16 }}>
-            <SectionLabel>Notifications</SectionLabel>
-            {[
-              { key: "matchInvites" as const, label: "Match Invites", desc: "Get notified when friends challenge you" },
-              { key: "friendRequests" as const, label: "Friend Requests", desc: "Alerts for new friend requests" },
-            ].map((item, i) => (
-              <div key={item.key} style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "12px 0",
-                borderBottom: i < 2 ? "1px solid var(--color-border-subtle)" : "none",
-              }}>
-                <div>
-                  <div style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--color-text-primary)" }}>{item.label}</div>
-                  <div style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)", marginTop: 2 }}>{item.desc}</div>
-                </div>
-                <ToggleSwitch
-                  on={notifications[item.key]}
-                  onToggle={() => setNotifications({
-                    ...notifications,
-                    [item.key]: !notifications[item.key],
-                  })}
-                />
-              </div>
-            ))}
-          </Card>
+          {/* Unsupported preferences stay hidden until they affect gameplay or delivery. */}
 
           {/* ═══ HELP ════════════════════════════════════════ */}
           <Card style={{ marginBottom: 16 }}>
@@ -356,6 +323,7 @@ export default function SettingsPage() {
               </div>
               <button
                 onClick={handleReplayTutorial}
+                type="button"
                 style={{
                   padding: "10px 20px",
                   borderRadius: 6,

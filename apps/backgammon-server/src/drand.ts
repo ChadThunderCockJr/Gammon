@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { quicknetClient, fetchBeacon as drandFetchBeacon, type RandomnessBeacon } from "drand-client";
 
 // ── drand quicknet constants ──────────────────────────────────────
@@ -64,4 +65,19 @@ export async function fetchBeacon(round: number): Promise<DrandBeacon> {
   };
   cacheSet(result.round, beacon);
   return result;
+}
+export async function fetchFutureBeacon(round: number, timeoutMs = 15_000): Promise<DrandBeacon> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const beacon = await fetchBeacon(round);
+      if (beacon.round !== round) throw new Error("DRAND_ROUND_MISMATCH");
+      return beacon;
+    } catch (error) {
+      lastError = error;
+      await delay(500);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("DRAND_FUTURE_ROUND_TIMEOUT");
 }

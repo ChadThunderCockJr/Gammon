@@ -1,58 +1,74 @@
 import { createHash } from "node:crypto";
 import type { DrandBeacon } from "./drand.js";
+import {
+  canonicalDiceCommitmentInput,
+  canonicalDiceDerivationInput,
+  type DiceDerivationDomain,
+} from "@xion-beginner/backgammon-core";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export interface DrandDiceProof {
-  drandRound: number;
-  drandRandomness: string;  // 32 bytes hex
-  drandSignature: string;   // BLS signature hex
-  playerWhite: string;
-  playerBlack: string;
-  turnNumber: number;
-  dice: [number, number];
+export type DiceDerivationContext = DiceDerivationDomain;
+
+export interface DrandDiceProof extends DiceDerivationContext {
+  readonly drandSignature: string;
+  readonly dice: [number, number];
+  readonly derivationVersion: "gammon.dice-result.v2";
 }
 
-// ── Dice derivation ───────────────────────────────────────────────
+type CommitmentContext = Omit<DiceDerivationContext, "drandRandomness">;
+type ProofContext = Omit<DiceDerivationContext, "drandRandomness" | "drandRound">;
 
-/** Derive deterministic dice from drand randomness + game context */
-export function deriveDice(
-  drandRandomness: string,
-  playerWhite: string,
-  playerBlack: string,
-  turnNumber: number,
-): [number, number] {
-  const combined = createHash("sha256")
-    .update(drandRandomness + playerWhite + playerBlack + String(turnNumber))
-    .digest();
-
-  const die1 = (combined[0] % 6) + 1;
-  const die2 = (combined[1] % 6) + 1;
-  return [die1, die2];
+export function diceCommitmentContext(input: CommitmentContext): string {
+  return createHash("sha256").update(canonicalDiceCommitmentInput(input)).digest("hex");
 }
 
-/** Create a full dice proof from a drand beacon */
+/**
+ * Derive deterministic, unbiased dice from a committed drand beacon and the
+ * complete game domain. Bytes 252-255 are rejected so every face has exactly
+ * 42 representatives. Opening-roll ties consume the next deterministic pair.
+ */
+export function deriveDice(input: DiceDerivationContext): [number, number] {
+  let first: number | null = null;
+  for (let counter = 0; ; counter += 1) {
+    const block = createHash("sha256").update(canonicalDiceDerivationInput(input, counter)).digest();
+    for (const byte of block) {
+      if (byte >= 252) continue;
+      const value = (byte % 6) + 1;
+      if (first === null) {
+        first = value;
+        continue;
+      }
+      if (input.openingRoll && first === value) {
+        first = null;
+        continue;
+      }
+      return [first, value];
+    }
+  }
+}
+
 export function createDiceProof(
   beacon: DrandBeacon,
-  playerWhite: string,
-  playerBlack: string,
-  turnNumber: number,
+  context: ProofContext,
 ): DrandDiceProof {
-  const dice = deriveDice(beacon.randomness, playerWhite, playerBlack, turnNumber);
-  return {
+  const derivation: DiceDerivationContext = {
+    ...context,
     drandRound: beacon.round,
     drandRandomness: beacon.randomness,
+  };
+  return {
+    ...derivation,
     drandSignature: beacon.signature,
-    playerWhite,
-    playerBlack,
-    turnNumber,
-    dice,
+    dice: deriveDice(derivation),
+    derivationVersion: "gammon.dice-result.v2",
   };
 }
 
-/** Verify that dice were correctly derived from drand randomness (does NOT verify BLS sig — that requires drand-client or @noble/curves) */
+/** Verify deterministic derivation. BLS verification is performed by drand-client on ingest. */
 export function verifyDiceDerivation(proof: DrandDiceProof): boolean {
-  const expected = deriveDice(proof.drandRandomness, proof.playerWhite, proof.playerBlack, proof.turnNumber);
+  if (proof.derivationVersion !== "gammon.dice-result.v2") return false;
+  const expected = deriveDice(proof);
   return expected[0] === proof.dice[0] && expected[1] === proof.dice[1];
 }
 

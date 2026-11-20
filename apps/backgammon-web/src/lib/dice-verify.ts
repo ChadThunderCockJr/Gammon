@@ -3,6 +3,11 @@
  * Verifies BLS signatures from the League of Entropy and re-derives dice values.
  */
 
+import {
+  canonicalDiceDerivationInput,
+  type DiceDerivationDomain,
+} from "@xion-beginner/backgammon-core";
+
 // drand quicknet public key (BLS12-381 G2)
 const DRAND_QUICKNET_PUBLIC_KEY_HEX =
   "83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a";
@@ -25,20 +30,30 @@ function bytesToHex(bytes: Uint8Array): string {
     .join("");
 }
 
-/** Derive dice from drand randomness + game context (mirrors server logic) */
-export async function deriveDice(
-  drandRandomness: string,
-  playerWhite: string,
-  playerBlack: string,
-  turnNumber: number,
-): Promise<[number, number]> {
+export type DiceDerivationContext = DiceDerivationDomain;
+/** Mirrors the server's rejection-sampled, domain-separated derivation. */
+export async function deriveDice(input: DiceDerivationContext): Promise<[number, number]> {
   const encoder = new TextEncoder();
-  const data = encoder.encode(drandRandomness + playerWhite + playerBlack + String(turnNumber));
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashBytes = new Uint8Array(hashBuffer);
-  const die1 = (hashBytes[0] % 6) + 1;
-  const die2 = (hashBytes[1] % 6) + 1;
-  return [die1, die2];
+  let first: number | null = null;
+  for (let counter = 0; ; counter += 1) {
+    const block = new Uint8Array(await crypto.subtle.digest(
+      "SHA-256",
+      encoder.encode(canonicalDiceDerivationInput(input, counter)),
+    ));
+    for (const byte of block) {
+      if (byte >= 252) continue;
+      const value = (byte % 6) + 1;
+      if (first === null) {
+        first = value;
+        continue;
+      }
+      if (input.openingRoll && first === value) {
+        first = null;
+        continue;
+      }
+      return [first, value];
+    }
+  }
 }
 
 /** Verify a drand BLS signature (quicknet: G1 signatures on BLS12-381) */
@@ -68,16 +83,11 @@ async function verifyBLSSignature(
 }
 
 /** Verify a single dice roll against its drand proof */
-export async function verifyDiceRoll(params: {
-  drandRound: number;
-  drandRandomness: string;
-  drandSignature: string;
-  playerWhite: string;
-  playerBlack: string;
-  turnNumber: number;
-  dice: [number, number];
-}): Promise<{ valid: boolean; details: string }> {
-  const { drandRound, drandRandomness, drandSignature, playerWhite, playerBlack, turnNumber, dice } = params;
+export async function verifyDiceRoll(params: DiceProof): Promise<{ valid: boolean; details: string }> {
+  const { drandRound, drandRandomness, drandSignature, dice } = params;
+  if (params.drandChainHash !== DRAND_CHAIN_HASH || params.derivationVersion !== "gammon.dice-result.v2") {
+    return { valid: false, details: "Unsupported drand chain or dice derivation version" };
+  }
 
   // 1. Verify BLS signature from drand
   const sigValid = await verifyBLSSignature(drandRound, drandSignature);
@@ -95,7 +105,7 @@ export async function verifyDiceRoll(params: {
   }
 
   // 3. Verify dice derivation
-  const expectedDice = await deriveDice(drandRandomness, playerWhite, playerBlack, turnNumber);
+  const expectedDice = await deriveDice(params);
   if (expectedDice[0] !== dice[0] || expectedDice[1] !== dice[1]) {
     return {
       valid: false,
@@ -106,20 +116,25 @@ export async function verifyDiceRoll(params: {
   return { valid: true, details: "BLS signature verified, randomness derived correctly, dice match" };
 }
 
-export interface DiceProof {
-  drandRound: number;
-  drandRandomness: string;
+export interface DiceProof extends DiceDerivationContext {
   drandSignature: string;
-  playerWhite: string;
-  playerBlack: string;
-  turnNumber: number;
   dice: [number, number];
+  derivationVersion: "gammon.dice-result.v2";
 }
+
+export interface UnverifiableDiceRoll {
+  turnNumber: number;
+  player: "white" | "black";
+  dice: [number, number];
+  proofStatus: "unverifiable";
+}
+
+export type AuditDiceRoll = DiceProof | UnverifiableDiceRoll;
 
 export interface DiceProofsResponse {
   gameId: string;
   drandChain: string;
   playerWhite: string;
   playerBlack: string;
-  rolls: DiceProof[];
+  rolls: AuditDiceRoll[];
 }

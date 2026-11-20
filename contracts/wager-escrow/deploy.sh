@@ -1,107 +1,43 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Configuration
-CHAIN_ID="xion-testnet-2"
-NODE="https://rpc.xion-testnet-2.burnt.com:443"
-USDC_DENOM="ibc/6490A7EAB61059BFC1CDDEB05917DD70BDF3A611654162A1A47DB930D40D8AF4"
-RAKE_BPS="250"              # 2.5% platform rake
-MIN_WAGER="1000000"         # 1 USDC (6 decimals)
-MAX_WAGER="100000000"       # 100 USDC
-TIMEOUT_SECONDS="300"       # 5 minutes
-
-# Your wallet (set this before running)
-WALLET_ADDRESS="${WALLET_ADDRESS:-}"
-RAKE_RECIPIENT="${RAKE_RECIPIENT:-$WALLET_ADDRESS}"
-
-if [ -z "$WALLET_ADDRESS" ]; then
-    echo "Error: Set WALLET_ADDRESS environment variable"
-    echo "Usage: WALLET_ADDRESS=xion1... RAKE_RECIPIENT=xion1... ./deploy.sh"
+# Deliberately no default values: a cash-game deployment must be explicitly configured.
+required=(
+  VERUSD_CHAIN_ID VERUSD_RPC_URL WALLET_ADDRESS VERUSD_DENOM
+  SETTLEMENT_AUTHORITY_CONTRACT VERUSD_RAKE_RECIPIENT
+  VERUSD_MIN_STAKE_MICRO_USD VERUSD_MAX_STAKE_MICRO_USD
+  VERUSD_FUNDING_TIMEOUT_SECONDS ESCROW_CODE_ID
+)
+for name in "${required[@]}"; do
+  if [[ -z "${!name:-}" ]]; then
+    echo "Missing required environment variable: $name" >&2
     exit 1
+  fi
+done
+
+if [[ "${VERUSD_DENOM}" != factory/xion1*/verusd ]]; then
+  echo "VERUSD_DENOM must be the explicitly approved factory/xion.../verusd denom" >&2
+  exit 1
+fi
+if [[ "${VERUSD_RAKE_BPS:-0}" != "0" ]]; then
+  echo "This cash-game rules version requires VERUSD_RAKE_BPS=0" >&2
+  exit 1
 fi
 
-WASM_FILE="./artifacts/wager_escrow.wasm"
-
-if [ ! -f "$WASM_FILE" ]; then
-    echo "Building contract..."
-    cargo build --release --target wasm32-unknown-unknown
-    mkdir -p ./artifacts
-    cp ./target/wasm32-unknown-unknown/release/wager_escrow.wasm ./artifacts/
-fi
-
-echo "==================================="
-echo "Wager Escrow Contract Deployment"
-echo "==================================="
-echo "Chain:           $CHAIN_ID"
-echo "Wallet:          $WALLET_ADDRESS"
-echo "Rake Recipient:  $RAKE_RECIPIENT"
-echo "Rake BPS:        $RAKE_BPS ($(echo "scale=2; $RAKE_BPS / 100" | bc)%)"
-echo "Min Wager:       $MIN_WAGER ($((MIN_WAGER / 1000000)) USDC)"
-echo "Max Wager:       $MAX_WAGER ($((MAX_WAGER / 1000000)) USDC)"
-echo "Timeout:         $TIMEOUT_SECONDS seconds"
-echo "==================================="
-echo ""
-
-# Step 1: Store the wager-escrow contract
-echo "Step 1: Storing wager-escrow contract code..."
-echo ""
-echo "xiond tx wasm store $WASM_FILE \\"
-echo "  --from $WALLET_ADDRESS \\"
-echo "  --chain-id $CHAIN_ID \\"
-echo "  --node $NODE \\"
-echo "  --gas auto \\"
-echo "  --gas-adjustment 1.5 \\"
-echo "  --gas-prices 0.025uxion \\"
-echo "  -y"
-echo ""
-echo "Get CODE_ID: xiond query tx <TXHASH> --node $NODE | grep -A1 'code_id'"
-echo ""
-
-# Step 2: Instantiate wager-escrow
-echo "Step 2: Instantiate wager-escrow (replace ESCROW_CODE_ID):"
-echo ""
-cat << EOF
-INIT_MSG='{"usdc_denom":"$USDC_DENOM","rake_bps":$RAKE_BPS,"rake_recipient":"$RAKE_RECIPIENT","min_wager":$MIN_WAGER,"max_wager":$MAX_WAGER,"timeout_seconds":$TIMEOUT_SECONDS,"game_contract":null}'
-
-xiond tx wasm instantiate ESCROW_CODE_ID "\$INIT_MSG" \\
-  --from $WALLET_ADDRESS \\
-  --label "wager-escrow-v1" \\
-  --chain-id $CHAIN_ID \\
-  --node $NODE \\
-  --admin $WALLET_ADDRESS \\
-  --gas auto \\
-  --gas-adjustment 1.5 \\
-  --gas-prices 0.025uxion \\
-  -y
+INIT_MSG=$(cat <<EOF
+{"wager_denom":"${VERUSD_DENOM}","settlement_authority":"${SETTLEMENT_AUTHORITY_CONTRACT}","rake_bps":0,"rake_recipient":"${VERUSD_RAKE_RECIPIENT}","min_stake_per_point":"${VERUSD_MIN_STAKE_MICRO_USD}","max_stake_per_point":"${VERUSD_MAX_STAKE_MICRO_USD}","funding_timeout_seconds":${VERUSD_FUNDING_TIMEOUT_SECONDS},"cube_cap":8,"rules_version":"cash-v1"}
 EOF
-echo ""
-echo "Get ESCROW_ADDRESS: xiond query tx <TXHASH> --node $NODE | grep -A1 '_contract_address'"
-echo ""
+)
 
-# Step 3: Set game contract (after deploying the game server)
-echo "Step 3: Set the game contract that can settle matches (replace addresses):"
+echo "Instantiating verUSD cash-game escrow on ${VERUSD_CHAIN_ID}."
+echo "Confirm the code checksum, independent settlement authority, legal approvals, Brale program setup, and production funds gate before signing."
 echo ""
-cat << EOF
-UPDATE_MSG='{"update_config":{"game_contract":"GAME_CONTRACT_ADDRESS"}}'
-
-xiond tx wasm execute ESCROW_ADDRESS "\$UPDATE_MSG" \\
-  --from $WALLET_ADDRESS \\
-  --chain-id $CHAIN_ID \\
-  --node $NODE \\
-  --gas auto \\
-  --gas-adjustment 1.5 \\
-  --gas-prices 0.025uxion \\
-  -y
-EOF
+echo "xiond tx wasm instantiate ${ESCROW_CODE_ID} '${INIT_MSG}' \\
+  --from ${WALLET_ADDRESS} \\
+  --label wager-escrow-cash-v1 \\
+  --chain-id ${VERUSD_CHAIN_ID} \\
+  --node ${VERUSD_RPC_URL} \\
+  --admin ${WALLET_ADDRESS} \\
+  --gas auto --gas-adjustment 1.5 --gas-prices 0.025uxion -y"
 echo ""
-echo "==================================="
-echo "After deployment, update your app config:"
-echo "WAGER_ESCROW_CONTRACT=<ESCROW_ADDRESS>"
-echo "==================================="
-echo ""
-echo "Notes:"
-echo "- The admin (deployer) can create escrows and settle games"
-echo "- Set game_contract to allow a backend service to settle games"
-echo "- Players deposit USDC directly into the escrow contract"
-echo "- Winner receives (2 * wager) minus the platform rake"
-echo "==================================="
+echo "After finality, set VERUSD_ESCROW_CONTRACT and VERUSD_ESCROW_CODE_CHECKSUM in the server environment, restart the attestation worker, and confirm /api/funds/config reports zero blockers before any test transaction."

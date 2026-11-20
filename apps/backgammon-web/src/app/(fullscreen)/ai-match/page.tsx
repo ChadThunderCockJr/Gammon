@@ -111,50 +111,53 @@ function AIMatchInner() {
   };
 
   return (
-    <GameScreen
-      gameState={gameState}
-      myColor={myColor}
-      legalMoves={legalMoves}
-      opponent={opponent}
-      opponentDisconnected={opponentDisconnected}
-      winner={winner}
-      resultType={resultType}
-      onMove={makeMove}
-      onRollDice={rollDice}
-      onEndTurn={endTurn}
-      onResign={resign}
-      onUndo={undoMove}
-      canUndo={canUndo}
-      turnStartedAt={null}
-      lastOpponentMove={lastOpponentMove}
-      onNewGame={reset}
-      onBackToLobby={() => {
-        reset();
-        router.push("/");
-      }}
-      cubeValue={cubeValue}
-      cubeOwner={cubeOwner}
-      doubleOffered={doubleOffered}
-      doubleOfferedBy={doubleOfferedBy}
-      canDouble={canDouble}
-      onDouble={offerDouble}
-      onAcceptDouble={acceptDouble}
-      onRejectDouble={rejectDouble}
-      forcedMoveNotice={forcedMoveNotice}
-      turnHistory={turnHistory}
-      // Consultation mode
-      isAIGame
-      consultationEnabled={consultation.enabled}
-      onToggleConsultation={consultation.toggle}
-      consultationAnalysis={consultation.lastMoveAnalysis}
-      consultationAnalysisLoading={consultation.analysisLoading}
-      consultationHintLoading={consultation.hintLoading}
-      hintMoves={consultation.hintMoves}
-      consultationGnubgReady={consultation.gnubgReady}
-      canRequestHint={allDiceAvailable}
-      onRequestHint={handleRequestHint}
-      onClearHint={consultation.clearHint}
-    />
+    <>
+      <h1 className="sr-only">Free AI match</h1>
+      <GameScreen
+        gameState={gameState}
+        myColor={myColor}
+        legalMoves={legalMoves}
+        opponent={opponent}
+        opponentDisconnected={opponentDisconnected}
+        winner={winner}
+        resultType={resultType}
+        onMove={makeMove}
+        onRollDice={rollDice}
+        onEndTurn={endTurn}
+        onResign={resign}
+        onUndo={undoMove}
+        canUndo={canUndo}
+        turnStartedAt={null}
+        lastOpponentMove={lastOpponentMove}
+        onNewGame={reset}
+        onBackToLobby={() => {
+          reset();
+          router.push("/");
+        }}
+        cubeValue={cubeValue}
+        cubeOwner={cubeOwner}
+        doubleOffered={doubleOffered}
+        doubleOfferedBy={doubleOfferedBy}
+        canDouble={canDouble}
+        onDouble={offerDouble}
+        onAcceptDouble={acceptDouble}
+        onRejectDouble={rejectDouble}
+        forcedMoveNotice={forcedMoveNotice}
+        turnHistory={turnHistory}
+        // Consultation mode
+        isAIGame
+        consultationEnabled={consultation.enabled}
+        onToggleConsultation={consultation.toggle}
+        consultationAnalysis={consultation.lastMoveAnalysis}
+        consultationAnalysisLoading={consultation.analysisLoading}
+        consultationHintLoading={consultation.hintLoading}
+        hintMoves={consultation.hintMoves}
+        consultationGnubgReady={consultation.gnubgReady}
+        canRequestHint={allDiceAvailable}
+        onRequestHint={handleRequestHint}
+        onClearHint={consultation.clearHint}
+      />
+    </>
   );
 }
 

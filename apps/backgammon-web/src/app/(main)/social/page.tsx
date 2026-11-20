@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from "react";
 import { Card, Avatar } from "@/components/ui";
 import { useSocialContext } from "@/contexts/SocialContext";
 import type { ChallengeConfig } from "@/hooks/useSocial";
-import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 // ── Icons ──────────────────────────────────────────────────────
 
@@ -87,15 +86,17 @@ const REPORT_REASONS = ["Cheating", "Harassment", "Inappropriate name", "Other"]
 function PlayerKebabMenu({
   onBlock,
   onReport,
+  blockAction,
+  reportAction,
 }: {
   onBlock: () => void;
   onReport: (reason: string) => void;
+  blockAction: { status: "idle" | "pending" | "success" | "error"; error?: string };
+  reportAction: { status: "idle" | "pending" | "success" | "error"; error?: string; receiptId?: string };
 }) {
   const [open, setOpen] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [reason, setReason] = useState(REPORT_REASONS[0]);
-  const [blocked, setBlocked] = useState(false);
-  const [reported, setReported] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -116,8 +117,8 @@ function PlayerKebabMenu({
         onClick={() => { setOpen((p) => !p); setShowReport(false); }}
         aria-label="More options"
         style={{
-          width: 26,
-          height: 26,
+          width: 44,
+          height: 44,
           borderRadius: 6,
           border: "1px solid var(--color-border-subtle)",
           background: open ? "var(--color-bg-elevated)" : "transparent",
@@ -175,54 +176,55 @@ function PlayerKebabMenu({
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => setShowReport(false)} style={{
                   flex: 1, padding: "4px 8px", borderRadius: 6,
+                  minHeight: 44,
                   border: "1px solid var(--color-border-subtle)", background: "transparent",
                   color: "var(--color-text-muted)", fontSize: "0.6875rem", fontWeight: 600,
                   cursor: "pointer", fontFamily: "var(--font-body)",
                 }}>
                   Cancel
                 </button>
-                <button onClick={() => {
-                  onReport(reason);
-                  setReported(true);
-                  setOpen(false);
-                  setShowReport(false);
-                }} style={{
+                <button onClick={() => onReport(reason)} disabled={reportAction.status === "pending"} style={{
                   flex: 1, padding: "4px 8px", borderRadius: 6,
+                  minHeight: 44,
                   border: "none", background: "var(--color-danger)", color: "#fff",
-                  fontSize: "0.6875rem", fontWeight: 700, cursor: "pointer", fontFamily: "var(--font-body)",
+                  fontSize: "0.6875rem", fontWeight: 700, cursor: reportAction.status === "pending" ? "wait" : "pointer", fontFamily: "var(--font-body)",
                 }}>
-                  Submit
+                  {reportAction.status === "pending" ? "Submitting…" : "Submit"}
                 </button>
               </div>
             </div>
           ) : (
             <>
-              <button onClick={() => { onBlock(); setBlocked(true); setOpen(false); }}
-                disabled={blocked}
+              <button onClick={onBlock} disabled={blockAction.status === "pending" || blockAction.status === "success"}
                 style={{
                   display: "block", width: "100%", textAlign: "left",
-                  padding: "6px 10px", borderRadius: 5, border: "none",
+                  minHeight: 44, padding: "6px 10px", borderRadius: 5, border: "none",
                   background: "transparent",
-                  color: blocked ? "var(--color-text-muted)" : "var(--color-text-secondary)",
-                  fontSize: "0.6875rem", fontWeight: 500, cursor: blocked ? "default" : "pointer",
-                  fontFamily: "var(--font-body)", opacity: blocked ? 0.5 : 1,
+                  color: blockAction.status === "success" ? "var(--color-text-muted)" : "var(--color-text-secondary)",
+                  fontSize: "0.6875rem", fontWeight: 500, cursor: blockAction.status === "pending" ? "wait" : "pointer",
+                  fontFamily: "var(--font-body)",
                 }}
               >
-                {blocked ? "Blocked" : "Block Player"}
+                {blockAction.status === "pending" ? "Blocking…" : blockAction.status === "success" ? "Blocked" : "Block Player"}
               </button>
               <button onClick={() => setShowReport(true)}
-                disabled={reported}
+                disabled={reportAction.status === "pending" || reportAction.status === "success"}
                 style={{
                   display: "block", width: "100%", textAlign: "left",
-                  padding: "6px 10px", borderRadius: 5, border: "none",
+                  minHeight: 44, padding: "6px 10px", borderRadius: 5, border: "none",
                   background: "transparent",
-                  color: reported ? "var(--color-text-muted)" : "var(--color-danger)",
-                  fontSize: "0.6875rem", fontWeight: 500, cursor: reported ? "default" : "pointer",
-                  fontFamily: "var(--font-body)", opacity: reported ? 0.5 : 1,
+                  color: reportAction.status === "success" ? "var(--color-text-muted)" : "var(--color-danger)",
+                  fontSize: "0.6875rem", fontWeight: 500, cursor: reportAction.status === "pending" ? "wait" : "pointer",
+                  fontFamily: "var(--font-body)", opacity: reportAction.status === "success" ? 0.5 : 1,
                 }}
               >
-                {reported ? "Reported" : "Report Player"}
+                {reportAction.status === "pending" ? "Submitting…" : reportAction.status === "success" ? "Reported" : "Report Player"}
               </button>
+              {(blockAction.status === "error" || reportAction.status === "error") && (
+                <p role="alert" style={{ margin: "4px 10px", fontSize: "0.6875rem", color: "var(--color-danger)" }}>
+                  {blockAction.error ?? reportAction.error}
+                </p>
+              )}
             </>
           )}
         </div>
@@ -242,10 +244,17 @@ function ChallengeConfigPanel({
   onSend: (config: ChallengeConfig) => void;
   onCancel: () => void;
 }) {
-  const isNativeApp = useIsNativeApp();
-  const [matchLength, setMatchLength] = useState(5);
-  const [wagerAmount, setWagerAmount] = useState(0);
+  const [matchLength, setMatchLength] = useState<ChallengeConfig["matchLength"]>(5);
   const [doublingCube, setDoublingCube] = useState(true);
+  const lengthRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const moveLengthSelection = (current: ChallengeConfig["matchLength"], direction: -1 | 1) => {
+    const index = MATCH_LENGTHS.indexOf(current);
+    const nextIndex = (index + direction + MATCH_LENGTHS.length) % MATCH_LENGTHS.length;
+    const next = MATCH_LENGTHS[nextIndex] as ChallengeConfig["matchLength"];
+    setMatchLength(next);
+    lengthRefs.current[nextIndex]?.focus();
+  };
 
   return (
     <div
@@ -269,15 +278,30 @@ function ChallengeConfigPanel({
 
       {/* Match Length */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)", minWidth: 50 }}>
+        <span id="challenge-length-label" style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)", minWidth: 50 }}>
           Length
         </span>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div role="radiogroup" aria-labelledby="challenge-length-label" style={{ display: "flex", gap: 4 }}>
           {MATCH_LENGTHS.map((len) => (
             <button
               key={len}
-              onClick={() => setMatchLength(len)}
+              type="button"
+              role="radio"
+              aria-checked={matchLength === len}
+              tabIndex={matchLength === len ? 0 : -1}
+              ref={(node) => { lengthRefs.current[MATCH_LENGTHS.indexOf(len)] = node; }}
+              onClick={() => setMatchLength(len as ChallengeConfig["matchLength"])}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                  event.preventDefault();
+                  moveLengthSelection(len as ChallengeConfig["matchLength"], 1);
+                } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  moveLengthSelection(len as ChallengeConfig["matchLength"], -1);
+                }
+              }}
               style={{
+                minHeight: 44,
                 padding: "3px 10px",
                 borderRadius: 5,
                 border: matchLength === len
@@ -296,73 +320,31 @@ function ChallengeConfigPanel({
           ))}
         </div>
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 44, fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+        <input type="checkbox" checked={doublingCube} onChange={(event) => setDoublingCube(event.target.checked)} style={{ width: 24, height: 24 }} />
+        Doubling cube {doublingCube ? "enabled" : "disabled"}
+      </label>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)" }}>
+        60 seconds per turn · {matchLength} point{matchLength === 1 ? "" : "s"} · {doublingCube ? "doubling enabled" : "no doubling"}
+      </p>
 
-      {/* Wager */}
-      {!isNativeApp && (
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)", minWidth: 50 }}>
-          Wager
-        </span>
-        <div style={{
-          display: "flex", alignItems: "center", gap: 4,
-          padding: "3px 8px", borderRadius: 5,
-          border: "1px solid var(--color-border-subtle)",
-          background: "var(--color-bg-surface)",
-        }}>
-          <span style={{ fontSize: "0.6875rem", color: "var(--color-text-muted)" }}>$</span>
-          <input
-            type="number"
-            min={0}
-            value={wagerAmount}
-            onChange={(e) => setWagerAmount(Math.max(0, Number(e.target.value)))}
-            style={{
-              width: 50, border: "none", outline: "none",
-              background: "transparent", fontSize: "0.6875rem",
-              color: "var(--color-text-primary)",
-              fontFamily: "var(--font-mono)",
-            }}
-          />
-        </div>
-      </div>
-      )}
 
-      {/* Doubling Cube */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)", minWidth: 50 }}>
-          Cube
-        </span>
-        <button
-          onClick={() => setDoublingCube((p) => !p)}
-          style={{
-            padding: "3px 10px",
-            borderRadius: 5,
-            border: doublingCube
-              ? "1px solid var(--color-gold-primary)"
-              : "1px solid var(--color-border-subtle)",
-            background: doublingCube ? "var(--color-gold-muted)" : "transparent",
-            color: doublingCube ? "var(--color-gold-primary)" : "var(--color-text-muted)",
-            fontSize: "0.6875rem",
-            fontWeight: 600,
-            cursor: "pointer",
-            fontFamily: "var(--font-body)",
-          }}
-        >
-          {doublingCube ? "On" : "Off"}
-        </button>
-      </div>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--color-text-secondary)", fontFamily: "var(--font-body)" }}>
+        Challenges are free to play. Cash games use a separate, fully disclosed verUSD flow.
+      </p>
 
       {/* Actions */}
       <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
         <button onClick={onCancel} style={{
-          flex: 1, padding: "5px 10px", borderRadius: 6,
+          flex: 1, padding: "5px 10px", minHeight: 44, borderRadius: 6,
           border: "1px solid var(--color-border-subtle)", background: "transparent",
           color: "var(--color-text-muted)", fontSize: "0.6875rem", fontWeight: 600,
           cursor: "pointer", fontFamily: "var(--font-body)",
         }}>
           Cancel
         </button>
-        <button onClick={() => onSend({ matchLength, wagerAmount, doublingCube })} style={{
-          flex: 1, padding: "5px 10px", borderRadius: 6, border: "none",
+        <button onClick={() => onSend({ version: "free-challenge-v1", mode: "free", matchLength, doublingCube, timeControl: 60 })} style={{
+          flex: 1, padding: "5px 10px", minHeight: 44, borderRadius: 6, border: "none",
           background: "linear-gradient(135deg, var(--color-gold-dark), var(--color-gold-primary))",
           color: "var(--color-accent-fg)", fontSize: "0.6875rem", fontWeight: 700,
           cursor: "pointer", fontFamily: "var(--font-body)",
@@ -384,6 +366,8 @@ function FriendRow({
   onRemove,
   onBlock,
   onReport,
+  blockAction,
+  reportAction,
 }: {
   name: string;
   address: string;
@@ -392,6 +376,8 @@ function FriendRow({
   onRemove: () => void;
   onBlock: () => void;
   onReport: (reason: string) => void;
+  blockAction: { status: "idle" | "pending" | "success" | "error"; error?: string };
+  reportAction: { status: "idle" | "pending" | "success" | "error"; error?: string; receiptId?: string };
 }) {
   const [h, setH] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
@@ -435,6 +421,7 @@ function FriendRow({
             onClick={() => setShowConfig((p) => !p)}
             style={{
               padding: "4px 12px",
+              minHeight: 44,
               borderRadius: 6,
               border: h || showConfig
                 ? "1px solid var(--color-gold-primary)"
@@ -451,11 +438,13 @@ function FriendRow({
             Challenge
           </button>
         )}
-        <PlayerKebabMenu onBlock={onBlock} onReport={onReport} />
+        <PlayerKebabMenu onBlock={onBlock} onReport={onReport} blockAction={blockAction} reportAction={reportAction} />
         <button
           onClick={onRemove}
           style={{
             padding: "4px 8px",
+            minWidth: 44,
+            minHeight: 44,
             borderRadius: 6,
             border: "1px solid transparent",
             background: "transparent",
@@ -532,6 +521,7 @@ function RequestRow({
         onClick={onAccept}
         style={{
           padding: "4px 10px",
+          minHeight: 44,
           borderRadius: 6,
           border: "1px solid var(--color-success)",
           background: "var(--color-success-muted)",
@@ -551,6 +541,7 @@ function RequestRow({
         onClick={onReject}
         style={{
           padding: "4px 10px",
+          minHeight: 44,
           borderRadius: 6,
           border: "1px solid var(--color-border-subtle)",
           background: "transparent",
@@ -656,6 +647,18 @@ export default function SocialPage() {
   const onlineCount = social.friends.filter((f) => f.online).length;
   const offlineCount = social.friends.filter((f) => !f.online).length;
   const requestCount = social.incomingRequests.length;
+  const socialTabs = [
+    { id: "online" as const, label: `Online (${onlineCount})` },
+    { id: "offline" as const, label: `Offline (${offlineCount})` },
+    { id: "requests" as const, label: `Requests${requestCount > 0 ? ` (${requestCount})` : ""}` },
+  ];
+
+  const moveTabSelection = (current: typeof tab, direction: -1 | 1) => {
+    const index = socialTabs.findIndex((item) => item.id === current);
+    const next = socialTabs[(index + direction + socialTabs.length) % socialTabs.length].id;
+    setTab(next);
+    requestAnimationFrame(() => document.getElementById(`social-tab-${next}`)?.focus());
+  };
 
   // Debounced search
   useEffect(() => {
@@ -697,6 +700,16 @@ export default function SocialPage() {
           {onlineCount} friend{onlineCount !== 1 ? "s" : ""} online
         </p>
       </header>
+      {social.error && (
+        <div role="alert" className="mb-5 rounded-lg border border-[var(--color-danger)] bg-red-700/10 p-3 text-sm text-[var(--color-danger)]">
+          {social.error}
+        </div>
+      )}
+      {social.reportReceipt && (
+        <div role="status" className="mb-5 rounded-lg border border-[var(--color-success)] bg-green-700/10 p-3 text-sm text-[var(--color-text-primary)]">
+          Report submitted for review. Reference <code>{social.reportReceipt.reportId}</code>.
+        </div>
+      )}
 
       {/* Two Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-5">
@@ -798,6 +811,7 @@ export default function SocialPage() {
                           onClick={() => social.acceptFriendRequest(r.address)}
                           style={{
                             padding: "4px 12px",
+                            minHeight: 44,
                             borderRadius: 6,
                             border: "1px solid var(--color-success)",
                             background: "var(--color-success-muted)",
@@ -815,6 +829,7 @@ export default function SocialPage() {
                           onClick={() => handleSendRequest(r.address)}
                           style={{
                             padding: "4px 12px",
+                            minHeight: 44,
                             borderRadius: 6,
                             border: "1px solid var(--color-gold-primary)",
                             background: "var(--color-gold-muted)",
@@ -897,7 +912,7 @@ export default function SocialPage() {
                 type="text"
                 placeholder="Search friends..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(event) => setSearch(event.target.value)}
                 style={{
                   border: "none",
                   outline: "none",
@@ -911,40 +926,48 @@ export default function SocialPage() {
             </div>
 
             {/* Tabs */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-              {([
-                { id: "online" as const, label: `Online (${onlineCount})` },
-                { id: "offline" as const, label: `Offline (${offlineCount})` },
-                { id: "requests" as const, label: `Requests${requestCount > 0 ? ` (${requestCount})` : ""}` },
-              ]).map((t) => (
+            <div role="tablist" aria-label="Friend lists" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              {socialTabs.map((item) => (
                 <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
+                  type="button"
+                  role="tab"
+                  id={`social-tab-${item.id}`}
+                  aria-selected={tab === item.id}
+                  aria-controls={`social-panel-${item.id}`}
+                  tabIndex={tab === item.id ? 0 : -1}
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowRight") {
+                      event.preventDefault();
+                      moveTabSelection(item.id, 1);
+                    } else if (event.key === "ArrowLeft") {
+                      event.preventDefault();
+                      moveTabSelection(item.id, -1);
+                    }
+                  }}
                   style={{
                     flex: 1,
+                    minHeight: 44,
                     padding: "8px 14px",
                     borderRadius: 6,
-                    border:
-                      tab === t.id
-                        ? "1px solid var(--color-gold-primary)"
-                        : "1px solid var(--color-border-subtle)",
-                    background:
-                      tab === t.id ? "var(--color-gold-muted)" : "transparent",
+                    border: tab === item.id
+                      ? "1px solid var(--color-gold-primary)"
+                      : "1px solid var(--color-border-subtle)",
+                    background: tab === item.id ? "var(--color-gold-muted)" : "transparent",
                     fontSize: "0.8125rem",
                     fontWeight: 600,
-                    color:
-                      tab === t.id
-                        ? "var(--color-gold-primary)"
-                        : "var(--color-text-muted)",
+                    color: tab === item.id ? "var(--color-gold-primary)" : "var(--color-text-muted)",
                     cursor: "pointer",
                     fontFamily: "var(--font-body)",
                     transition: "all 0.15s ease",
                     position: "relative",
                   }}
                 >
-                  {t.label}
-                  {t.id === "requests" && requestCount > 0 && tab !== "requests" && (
+                  {item.label}
+                  {item.id === "requests" && requestCount > 0 && tab !== "requests" && (
                     <span
+                      aria-hidden="true"
                       style={{
                         position: "absolute",
                         top: -4,
@@ -961,14 +984,43 @@ export default function SocialPage() {
             </div>
 
             {/* Friend List / Requests */}
-            {tab === "requests" ? (
-              social.incomingRequests.length > 0 ? (
-                social.incomingRequests.map((r) => (
-                  <RequestRow
-                    key={r.address}
-                    name={r.displayName || r.address.slice(0, 12) + "..."}
-                    onAccept={() => social.acceptFriendRequest(r.address)}
-                    onReject={() => social.rejectFriendRequest(r.address)}
+            <div role="tabpanel" id={`social-panel-${tab}`} aria-labelledby={`social-tab-${tab}`}>
+              {tab === "requests" ? (
+                social.incomingRequests.length > 0 ? (
+                  social.incomingRequests.map((request) => (
+                    <RequestRow
+                      key={request.address}
+                      name={request.displayName || request.address.slice(0, 12) + "..."}
+                      onAccept={() => social.acceptFriendRequest(request.address)}
+                      onReject={() => social.rejectFriendRequest(request.address)}
+                    />
+                  ))
+                ) : (
+                  <div
+                    style={{
+                      padding: "24px 0",
+                      textAlign: "center",
+                      fontSize: "0.8125rem",
+                      color: "var(--color-text-faint)",
+                      fontFamily: "var(--font-body)",
+                    }}
+                  >
+                    No pending friend requests
+                  </div>
+                )
+              ) : filtered.length > 0 ? (
+                filtered.map((friend) => (
+                  <FriendRow
+                    key={friend.address}
+                    name={displayLabel(friend)}
+                    address={friend.address}
+                    online={friend.online}
+                    onChallenge={(config) => social.challengeFriend(friend.address, config)}
+                    onRemove={() => social.removeFriend(friend.address)}
+                    onBlock={() => social.blockUser(friend.address)}
+                    blockAction={social.blockActions[friend.address] ?? { status: "idle" }}
+                    reportAction={social.reportActions[friend.address] ?? { status: "idle" }}
+                    onReport={(reason) => social.reportUser(friend.address, reason)}
                   />
                 ))
               ) : (
@@ -981,42 +1033,57 @@ export default function SocialPage() {
                     fontFamily: "var(--font-body)",
                   }}
                 >
-                  No pending friend requests
+                  {social.friends.length === 0 ? "No friends yet. Add someone above!" : "No friends found"}
                 </div>
-              )
-            ) : filtered.length > 0 ? (
-              filtered.map((f) => (
-                <FriendRow
-                  key={f.address}
-                  name={displayLabel(f)}
-                  address={f.address}
-                  online={f.online}
-                  onChallenge={(config) => social.challengeFriend(f.address, config)}
-                  onRemove={() => social.removeFriend(f.address)}
-                  onBlock={() => social.blockUser(f.address)}
-                  onReport={(reason) => social.reportUser(f.address, reason)}
-                />
-              ))
-            ) : (
-              <div
-                style={{
-                  padding: "24px 0",
-                  textAlign: "center",
-                  fontSize: "0.8125rem",
-                  color: "var(--color-text-faint)",
-                  fontFamily: "var(--font-body)",
-                }}
-              >
-                {social.friends.length === 0
-                  ? "No friends yet. Add someone above!"
-                  : "No friends found"}
-              </div>
-            )}
+              )}
+            </div>
           </Card>
         </div>
 
         {/* RIGHT COLUMN — Activity Feed */}
         <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+          {social.blockedUsers.length > 0 && (
+            <Card>
+              <h3 style={{ fontSize: "0.6875rem", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: 1.5, color: "var(--color-text-muted)" }}>
+                Blocked players
+              </h3>
+              <div className="space-y-2">
+                {social.blockedUsers.map((blockedAddress) => (
+                  <div key={blockedAddress} className="flex items-center gap-3 rounded-lg border border-[var(--color-border-subtle)] p-3 text-sm">
+                    <code className="min-w-0 flex-1 truncate">{blockedAddress}</code>
+                    <button type="button" className="min-h-11 rounded border px-3 py-2" onClick={() => social.unblockUser(blockedAddress)}>
+                      Unblock
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+          {social.outgoingChallenges.length > 0 && (
+            <Card>
+              <h3 style={{ fontSize: "0.6875rem", fontWeight: 600, margin: "0 0 12px", textTransform: "uppercase", letterSpacing: 1.5, color: "var(--color-text-muted)" }}>
+                Sent challenges
+              </h3>
+              <div className="space-y-3">
+                {social.outgoingChallenges.map((challenge) => (
+                  <div key={challenge.challengeId} className="rounded-lg border border-[var(--color-border-subtle)] p-3 text-sm">
+                    <div className="font-semibold">{challenge.toName || challenge.toAddress.slice(0, 12) + "…"}</div>
+                    <div className="mt-1 text-[var(--color-text-secondary)]">
+                      Free · {challenge.config.matchLength} point{challenge.config.matchLength === 1 ? "" : "s"} · {challenge.config.timeControl}s turns · {challenge.config.doublingCube ? "doubling enabled" : "no doubling"}
+                    </div>
+                    <div className={`mt-2 text-xs font-semibold ${challenge.status !== "sent" ? "text-[var(--color-danger)]" : "text-[var(--color-text-muted)]"}`}>
+                      {challenge.status === "sent" ? "Sent — awaiting response" : challenge.status === "declined" ? "Declined" : "Expired"}
+                    </div>
+                    {challenge.status !== "sent" && (
+                      <button type="button" className="mt-2 min-h-11 rounded border px-3 py-2" onClick={() => social.challengeFriend(challenge.toAddress, challenge.config)}>
+                        Send again
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
           <Card>
             <div
               style={{

@@ -12,11 +12,14 @@ interface SegmentToggleProps {
   activeId: string;
   onSelect: (id: string) => void;
   className?: string;
+  ariaLabel?: string;
 }
 
-export function SegmentToggle({ segments, activeId, onSelect, className }: SegmentToggleProps) {
+export function SegmentToggle({ segments, activeId, onSelect, className, ariaLabel = "Options" }: SegmentToggleProps) {
   return (
     <div
+      role="radiogroup"
+      aria-label={ariaLabel}
       className={cn("flex overflow-hidden", className)}
       style={{
         borderRadius: "var(--radius-card)",
@@ -28,7 +31,24 @@ export function SegmentToggle({ segments, activeId, onSelect, className }: Segme
         return (
           <button
             key={segment.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            tabIndex={active ? 0 : -1}
             onClick={() => onSelect(segment.id)}
+            onKeyDown={(event) => {
+              const offset = event.key === "ArrowRight" || event.key === "ArrowDown"
+                ? 1
+                : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                  ? -1
+                  : 0;
+              if (offset === 0) return;
+              event.preventDefault();
+              const nextIndex = (i + offset + segments.length) % segments.length;
+              onSelect(segments[nextIndex].id);
+              const controls = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+              controls?.[nextIndex]?.focus();
+            }}
             style={{
               flex: 1,
               padding: "10px 0",

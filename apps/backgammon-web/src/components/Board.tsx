@@ -48,6 +48,11 @@ const QUAD_W = 6 * POINT_W + 5 * POINT_GAP; // 418
 const BOARD_INNER_W = QUAD_W * 2 + BAR_W + 8 + 12; // two quads + bar + margins + padding
 const BOARD_TOTAL_W = BOARD_INNER_W + 4 + BEAROFF_W; // + border + bear-off
 const BOARD_TOTAL_H = 20 * 2 + POINT_H * 2 + 60 + 8 + 4; // nums + points + center + padding + border
+const COMPACT_POINT_GAP = 0;
+const COMPACT_BAR_W = 24;
+const COMPACT_BEAROFF_W = 30;
+const COMPACT_BOARD_TOTAL_W =
+  12 * POINT_W + COMPACT_BAR_W + 8 + 12 + 4 + COMPACT_BEAROFF_W;
 
 const DICE_DOTS: Record<number, [number, number][]> = {
   1: [[0.5, 0.5]],
@@ -355,9 +360,15 @@ export function Board({
     setHoldPoint(null);
   }
 
-  // Clicking a point directly (for backwards compat with rendering)
-  function handleClick(point: number) {
-    // No-op — all interaction handled by pointer events
+  function handleKeyboardPoint(point: number) {
+    if (!isMyTurn || gameOver) return;
+    if (holdPoint !== null && legalDests.has(point)) {
+      const move = pickMove(legalMoves.filter((candidate) => candidate.from === holdPoint && candidate.to === point));
+      onMove(move.from, move.to);
+      setHoldPoint(null);
+      return;
+    }
+    if (legalSources.has(point)) setHoldPoint((selected) => selected === point ? null : point);
   }
 
   function handleBearOff() {
@@ -531,7 +542,7 @@ export function Board({
 
   function renderPoint(point: number, fromTop: boolean, idx: number) {
     const val = board.points[point];
-    let count = Math.abs(val);
+    const count = Math.abs(val);
     const col: "white" | "black" | null = val > 0 ? "white" : val < 0 ? "black" : null;
     const isSel = selectedPoint === point;
     const isDest = legalDests.has(point);
@@ -556,17 +567,32 @@ export function Board({
     if (isLastFrom) triHighlight = "var(--color-board-highlight)";
 
     return (
-      <div
+      <button
+        type="button"
         key={`pt-${point}`}
         data-point={point}
         className="relative flex flex-col items-center"
+        aria-label={`Point ${point}: ${count} ${col ?? "empty"} checker${count === 1 ? "" : "s"}${isSrc ? ", legal source" : ""}${isDest ? ", legal destination" : ""}`}
+        aria-pressed={isSel}
+        aria-disabled={!isSrc && !isDest}
+        tabIndex={isSrc || isDest ? 0 : -1}
         style={{
           width: POINT_W,
           height: POINT_H,
           justifyContent: fromTop ? "flex-start" : "flex-end",
           cursor: isSrc || isDest ? "pointer" : "default",
+          border: 0,
+          padding: 0,
+          background: "transparent",
         }}
-        onClick={() => handleClick(point)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            handleKeyboardPoint(point);
+          } else if (event.key === "Escape") {
+            setHoldPoint(null);
+          }
+        }}
       >
         {/* Triangle */}
         <div
@@ -662,10 +688,10 @@ export function Board({
             count={displayCount}
             fromTop={fromTop}
             selectedIdx={isSel ? topCheckerIdx : undefined}
-            onClick={() => handleClick(point)}
+            onClick={undefined}
           />
         )}
-      </div>
+      </button>
     );
   }
 
@@ -693,7 +719,7 @@ export function Board({
       <div
         className="flex flex-col items-center shrink-0"
         style={{
-          width: BAR_W,
+          width: barWidth,
           background: "var(--color-bg-deepest)",
           margin: "0 4px",
           borderRadius: 4,
@@ -714,49 +740,70 @@ export function Board({
               </div>
             )}
             {topCount > 0 && (
-              <div
+              <button
+                type="button"
                 data-point={topBarIdx}
                 className="flex flex-col items-center"
-                style={{ gap: -(CHECKER_SIZE - CHECKER_VISIBLE) }}
-                onClick={() => topSrc && handleClick(topBarIdx)}
+                aria-label={`${topColor} bar: ${topCount} checker${topCount === 1 ? "" : "s"}${topSrc ? ", legal source" : ""}`}
+                aria-pressed={selectedPoint === topBarIdx}
+                aria-disabled={!topSrc}
+                tabIndex={topSrc ? 0 : -1}
+                style={{ gap: -(CHECKER_SIZE - CHECKER_VISIBLE), border: 0, padding: 0, background: "transparent" }}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && topSrc) {
+                    event.preventDefault();
+                    handleKeyboardPoint(topBarIdx);
+                  }
+                }}
               >
                 {Array.from({ length: Math.min(topCount, 3) }).map((_, i) => (
                   <div key={i} style={{ marginTop: i > 0 ? -(CHECKER_SIZE - CHECKER_VISIBLE) : 0 }}>
                     <Checker
                       color={topColor}
                       highlighted={selectedPoint === topBarIdx && i === Math.min(topCount, 3) - 1}
-                      onClick={topSrc ? () => handleClick(topBarIdx) : undefined}
+                      onClick={undefined}
                     />
                   </div>
                 ))}
                 {topCount > 3 && (
                   <span className="text-[10px] font-bold text-[var(--color-text-secondary)]">{topCount}</span>
                 )}
-              </div>
+              </button>
             )}
           </>
         )}
         {!isTop && (
           <>
             {botCount > 0 && (
-              <div
+              <button
+                type="button"
                 data-point={botBarIdx}
                 className="flex flex-col-reverse items-center"
-                onClick={() => botSrc && handleClick(botBarIdx)}
+                aria-label={`${botColor} bar: ${botCount} checker${botCount === 1 ? "" : "s"}${botSrc ? ", legal source" : ""}`}
+                aria-pressed={selectedPoint === botBarIdx}
+                aria-disabled={!botSrc}
+                tabIndex={botSrc ? 0 : -1}
+                style={{ border: 0, padding: 0, background: "transparent" }}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && botSrc) {
+                    event.preventDefault();
+                    handleKeyboardPoint(botBarIdx);
+                  }
+                }}
               >
                 {Array.from({ length: Math.min(botCount, 3) }).map((_, i) => (
                   <div key={i} style={{ marginBottom: i > 0 ? -(CHECKER_SIZE - CHECKER_VISIBLE) : 0 }}>
                     <Checker
                       color={botColor}
                       highlighted={selectedPoint === botBarIdx && i === Math.min(botCount, 3) - 1}
-                      onClick={botSrc ? () => handleClick(botBarIdx) : undefined}
+                      onClick={undefined}
                     />
                   </div>
                 ))}
                 {botCount > 3 && (
                   <span className="text-[10px] font-bold text-[var(--color-text-secondary)]">{botCount}</span>
                 )}
-              </div>
+              </button>
             )}
             {pipLabel !== null && (
               <div className="text-center leading-none">
@@ -783,15 +830,15 @@ export function Board({
           transition: "opacity 200ms ease",
         }}
       >
-        <div className="flex flex-1" style={{ gap: POINT_GAP }}>
+        <div className="flex flex-1" style={{ gap: pointGap }}>
           {numbers.slice(0, 6).map((n) => (
             <div key={n} className="text-center font-semibold text-[var(--color-text-muted)]" style={{ width: POINT_W, fontSize: "0.6875rem" }}>
               {n}
             </div>
           ))}
         </div>
-        <div style={{ width: BAR_W + 8 }} />
-        <div className="flex flex-1" style={{ gap: POINT_GAP }}>
+        <div style={{ width: barWidth + 8 }} />
+        <div className="flex flex-1" style={{ gap: pointGap }}>
           {numbers.slice(6).map((n) => (
             <div key={n} className="text-center font-semibold text-[var(--color-text-muted)]" style={{ width: POINT_W, fontSize: "0.6875rem" }}>
               {n}
@@ -815,14 +862,24 @@ export function Board({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
+  const [isCompact, setIsCompact] = useState(false);
+  const pointGap = isCompact ? COMPACT_POINT_GAP : POINT_GAP;
+  const barWidth = isCompact ? COMPACT_BAR_W : BAR_W;
+  const bearOffWidth = isCompact ? COMPACT_BEAROFF_W : BEAROFF_W;
+  // The visible tray is too narrow to expand safely on portrait boards. Keep it
+  // noninteractive and expose a separate, non-overlapping action in the center strip.
+  const bearOffActionHeight = Math.max(44, 24 / scale);
+  const bearOffActionWidth = Math.max(96, 64 / scale);
 
   const updateScale = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
-    const sx = width / BOARD_TOTAL_W;
-    const sy = height / BOARD_TOTAL_H;
-    setScale(Math.min(sx, sy));
+    const isNarrowPortrait = window.matchMedia("(max-width: 430px) and (orientation: portrait)").matches;
+    const boardWidth = isNarrowPortrait ? COMPACT_BOARD_TOTAL_W : BOARD_TOTAL_W;
+    const fitScale = Math.min(width / boardWidth, height / BOARD_TOTAL_H);
+    setIsCompact(isNarrowPortrait);
+    setScale(isNarrowPortrait ? Math.max(24 / POINT_W, fitScale) : fitScale);
   }, []);
 
   useEffect(() => {
@@ -836,16 +893,23 @@ export function Board({
     <div
       ref={containerRef}
       data-board-root
-      role="application"
+      role="group"
       aria-label="Backgammon board"
-      className="w-full h-full flex items-center justify-center overflow-hidden"
+      aria-describedby="backgammon-board-instructions"
+      className="game-board-root w-full h-full flex items-center justify-center overflow-hidden"
       style={{ touchAction: dragState || holdPoint !== null ? "none" : "auto" }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
     >
+      <span id="backgammon-board-instructions" className="sr-only">
+        Use Tab to reach a legal checker. Press Enter or Space to select it, then choose a legal destination. Press Escape to cancel the selection.
+      </span>
+      <span className="sr-only" aria-live="polite">
+        {holdPoint === null ? "" : `Point ${holdPoint} selected. Choose a legal destination.`}
+      </span>
     <div
-      className="flex items-stretch select-none"
+      className="flex shrink-0 items-stretch select-none"
       style={{
         opacity: gameOver ? 0.4 : 1,
         pointerEvents: gameOver ? "none" : "auto",
@@ -872,11 +936,11 @@ export function Board({
 
         {/* Top half */}
         <div className="flex" style={{ padding: "0 6px" }}>
-          <div className="flex" style={{ gap: POINT_GAP }}>
+          <div className="flex" style={{ gap: pointGap }}>
             {topLeftPts.map((pt, i) => renderPoint(pt, true, i))}
           </div>
           {renderBar("top")}
-          <div className="flex" style={{ gap: POINT_GAP }}>
+          <div className="flex" style={{ gap: pointGap }}>
             {topRightPts.map((pt, i) => renderPoint(pt, true, i + 6))}
           </div>
         </div>
@@ -884,7 +948,7 @@ export function Board({
         {/* Center strip */}
         <div
           className="flex items-center justify-center relative"
-          style={{ padding: "6px 0", gap: 16, minHeight: 60 }}
+          style={{ padding: "6px 0", gap: 16, minHeight: Math.max(60, bearOffActionHeight) }}
         >
           {centerControls ?? (
             diceList.length > 0 && (
@@ -895,15 +959,30 @@ export function Board({
               </div>
             )
           )}
+          {canBear && (
+            <button
+              type="button"
+              aria-label="Bear off a checker"
+              className="absolute right-4 z-20 rounded-md border border-[var(--color-success)] bg-[var(--color-success)] font-semibold text-white"
+              style={{
+                width: bearOffActionWidth,
+                height: bearOffActionHeight,
+                fontSize: Math.max(12, 12 / scale),
+              }}
+              onClick={handleBearOff}
+            >
+              Bear off
+            </button>
+          )}
         </div>
 
         {/* Bottom half */}
         <div className="flex" style={{ padding: "0 6px" }}>
-          <div className="flex" style={{ gap: POINT_GAP }}>
+          <div className="flex" style={{ gap: pointGap }}>
             {botLeftPts.map((pt, i) => renderPoint(pt, false, i))}
           </div>
           {renderBar("bottom")}
-          <div className="flex" style={{ gap: POINT_GAP }}>
+          <div className="flex" style={{ gap: pointGap }}>
             {botRightPts.map((pt, i) => renderPoint(pt, false, i + 6))}
           </div>
         </div>
@@ -1000,80 +1079,80 @@ export function Board({
       </div>
 
       {/* Bear-off Tray */}
-      <div
-        className="flex flex-col"
-        aria-label="Bear-off tray"
-        style={{
-          width: BEAROFF_W,
-          background: "var(--color-bg-base)",
-          borderRadius: "0 12px 12px 0",
-          borderTop: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
-          borderRight: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
-          borderBottom: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
-          borderLeft: "1px solid var(--color-border-subtle)",
-          boxShadow: canBear
-            ? "var(--shadow-elevated), 0 0 20px var(--color-success-muted)"
-            : "var(--shadow-elevated)",
-          cursor: canBear ? "pointer" : "default",
-          transition: "border-color 150ms ease, box-shadow 150ms ease",
-          position: "relative",
-        }}
-        onClick={handleBearOff}
-      >
-        {/* Opponent borne-off (top) */}
-        <div className="flex-1 flex flex-col items-center justify-start" style={{ padding: "24px 0 8px", gap: 1 }}>
-          {Array.from({ length: Math.min(bearTopCount, 15) }).map((_, i) => (
+      <div className="relative shrink-0 self-stretch" style={{ width: bearOffWidth }}>
+        <div
+          aria-hidden="true"
+          className="flex h-full flex-col"
+          style={{
+            width: bearOffWidth,
+            background: "var(--color-bg-base)",
+            borderRadius: "0 12px 12px 0",
+            borderTop: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
+            borderRight: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
+            borderBottom: `2px solid ${canBear ? "var(--color-success)" : "var(--color-border-subtle)"}`,
+            borderLeft: "1px solid var(--color-border-subtle)",
+            boxShadow: canBear
+              ? "var(--shadow-elevated), 0 0 20px var(--color-success-muted)"
+              : "var(--shadow-elevated)",
+            transition: "border-color 150ms ease, box-shadow 150ms ease",
+            position: "relative",
+            pointerEvents: "none",
+          }}
+        >
+          {/* Opponent borne-off (top) */}
+          <div className="flex-1 flex flex-col items-center justify-start" style={{ padding: "24px 0 8px", gap: 1 }}>
+            {Array.from({ length: Math.min(bearTopCount, 15) }).map((_, i) => (
+              <div
+                key={i}
+                style={{
+                  width: 36, height: 8, borderRadius: 4,
+                  background: bearTopColor === "white" ? "var(--color-checker-white)" : "var(--color-checker-black)",
+                  border: `1px solid ${bearTopColor === "white" ? "var(--color-checker-white-border)" : "var(--color-checker-black-border)"}`,
+                }}
+              />
+            ))}
+            {bearTopCount > 0 && (
+              <span className="text-[10px] font-bold text-[var(--color-text-secondary)] mt-1">{bearTopCount}</span>
+            )}
+          </div>
+
+          {/* Green dot when bear-off is legal */}
+          {canBear && (
             <div
-              key={i}
+              className="animate-dest-pulse"
               style={{
-                width: 36, height: 8, borderRadius: 4,
-                background: bearTopColor === "white" ? "var(--color-checker-white)" : "var(--color-checker-black)",
-                border: `1px solid ${bearTopColor === "white" ? "var(--color-checker-white-border)" : "var(--color-checker-black-border)"}`,
+                position: "absolute",
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                background: "var(--color-success)",
+                boxShadow: "0 0 8px var(--color-success-muted)",
+                left: "50%",
+                top: "50%",
+                transform: "translate(-50%, -50%)",
+                zIndex: 15,
               }}
             />
-          ))}
-          {bearTopCount > 0 && (
-            <span className="text-[10px] font-bold text-[var(--color-text-secondary)] mt-1">{bearTopCount}</span>
           )}
-        </div>
 
-        {/* Green dot when bear-off is legal */}
-        {canBear && (
-          <div
-            className="animate-dest-pulse"
-            style={{
-              position: "absolute",
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              background: "var(--color-success)",
-              boxShadow: "0 0 8px var(--color-success-muted)",
-              left: "50%",
-              top: "50%",
-              transform: "translate(-50%, -50%)",
-              zIndex: 15,
-              pointerEvents: "none",
-            }}
-          />
-        )}
+          <div className="mx-2" style={{ height: 1, background: "var(--color-border-subtle)" }} />
 
-        <div className="mx-2" style={{ height: 1, background: "var(--color-border-subtle)" }} />
-
-        {/* Player borne-off (bottom) */}
-        <div className="flex-1 flex flex-col items-center justify-end" style={{ padding: "8px 0 24px", gap: 1 }}>
-          {bearBotCount > 0 && (
-            <span className="text-[10px] font-bold text-[var(--color-text-secondary)] mb-1">{bearBotCount}</span>
-          )}
-          {Array.from({ length: Math.min(bearBotCount, 15) }).map((_, i) => (
-            <div
-              key={i}
-              style={{
-                width: 36, height: 8, borderRadius: 4,
-                background: bearBotColor === "white" ? "var(--color-checker-white)" : "var(--color-checker-black)",
-                border: `1px solid ${bearBotColor === "white" ? "var(--color-checker-white-border)" : "var(--color-checker-black-border)"}`,
-              }}
-            />
-          ))}
+          {/* Player borne-off (bottom) */}
+          <div className="flex-1 flex flex-col items-center justify-end" style={{ padding: "8px 0 24px", gap: 1 }}>
+            {bearBotCount > 0 && (
+              <span className="text-[10px] font-bold text-[var(--color-text-secondary)] mb-1">{bearBotCount}</span>
+            )}
+            {Array.from({ length: Math.min(bearBotCount, 15) }).map((_, i) => (
+              <div
+                key={i}
+                style={{
+                  width: 36, height: 8, borderRadius: 4,
+                  background: bearBotColor === "white" ? "var(--color-checker-white)" : "var(--color-checker-black)",
+                  border: `1px solid ${bearBotColor === "white" ? "var(--color-checker-white-border)" : "var(--color-checker-black-border)"}`,
+                }}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>

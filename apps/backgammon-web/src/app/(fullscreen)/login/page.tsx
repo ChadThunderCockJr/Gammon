@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { sanitizeReturnTo, withReturnTo } from "@/lib/return-to";
 
 /* ══════════════════════════════════════════════════════════════════
    Local Components
@@ -245,16 +246,18 @@ function BoardIllustration() {
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { isConnected, isConnecting, login } = useAuth();
+  const returnTo = sanitizeReturnTo(searchParams.get("returnTo"));
 
   useEffect(() => {
     if (isConnected) {
-      router.push("/");
+      router.replace(returnTo);
     }
-  }, [isConnected, router]);
+  }, [isConnected, returnTo, router]);
 
   return (
-    <div
+    <main
       className="flex flex-col lg:flex-row"
       style={{
         minHeight: "100dvh",
@@ -313,9 +316,9 @@ export default function LoginPage() {
               lineHeight: 1.3,
             }}
           >
-            Every roll verified.
+            Play. Practice.
             <br />
-            Every game fair.
+            Review.
           </h2>
           <p
             style={{
@@ -326,8 +329,8 @@ export default function LoginPage() {
               fontFamily: "var(--font-body)",
             }}
           >
-            The first backgammon platform with provably fair dice on the
-            blockchain. No trust required — verify every roll yourself.
+            Play free backgammon online, practice with the computer, and review saved match records.
+            Cash games remain hidden unless their required controls are enabled.
           </p>
 
           {/* Feature pills */}
@@ -340,7 +343,7 @@ export default function LoginPage() {
               marginTop: 32,
             }}
           >
-            {["Provably Fair", "USDC Wagering", "World-Class AI", "15+ Variants"].map(
+            {["Free Online Play", "Practice vs AI", "Match Records", "Cash Games Gated"].map(
               (feat) => (
                 <span
                   key={feat}
@@ -398,7 +401,7 @@ export default function LoginPage() {
                 margin: "16px 0 0",
               }}
             >
-              Gammon
+              Sign in
             </h1>
             <p
               style={{
@@ -409,7 +412,7 @@ export default function LoginPage() {
                 fontFamily: "var(--font-body)",
               }}
             >
-              The world&apos;s fairest backgammon platform
+              Online backgammon with a free practice mode
             </p>
           </div>
 
@@ -442,48 +445,58 @@ export default function LoginPage() {
                 "Login"
               )}
             </GammonButton>
+            <button
+              type="button"
+              onClick={() => router.push("/ai-match?difficulty=beginner")}
+              style={{
+                width: "100%",
+                minHeight: 48,
+                borderRadius: 10,
+                border: "1px solid var(--color-border-strong)",
+                background: "transparent",
+                color: "var(--color-text-primary)",
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "var(--font-body)",
+              }}
+            >
+              Play free vs AI
+            </button>
           </div>
 
           {/* Footer */}
-          <p
+          <div
             style={{
-              fontSize: "0.6875rem",
               color: "var(--color-text-faint)",
               textAlign: "center",
-              lineHeight: 1.6,
               marginTop: 8,
               fontFamily: "var(--font-body)",
             }}
           >
-            By continuing, you agree to the{" "}
-            <a
-              href="/terms"
-              target="_blank"
-              style={{
-                color: "var(--color-text-muted)",
-                textDecoration: "underline",
-                cursor: "pointer",
-              }}
-            >
-              Terms of Service
-            </a>{" "}
-            and{" "}
-            <a
-              href="/privacy"
-              target="_blank"
-              style={{
-                color: "var(--color-text-muted)",
-                textDecoration: "underline",
-                cursor: "pointer",
-              }}
-            >
-              Privacy Policy
-            </a>
-          </p>
+            <p className="text-xs">By continuing, you agree to:</p>
+            <nav aria-label="Sign-in legal links" className="flex flex-wrap items-center justify-center gap-1 text-xs">
+              <a
+                href={withReturnTo("/terms", searchParams.get("returnTo"))}
+                target="_blank"
+                className="inline-flex min-h-11 items-center rounded px-2 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{ color: "var(--color-text-muted)" }}
+              >
+                Terms of Service
+              </a>
+              <a
+                href={withReturnTo("/privacy", searchParams.get("returnTo"))}
+                target="_blank"
+                className="inline-flex min-h-11 items-center rounded px-2 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{ color: "var(--color-text-muted)" }}
+              >
+                Privacy Policy
+              </a>
+            </nav>
+          </div>
         </div>
 
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
-    </div>
+    </main>
   );
 }

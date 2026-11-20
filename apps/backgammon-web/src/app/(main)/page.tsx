@@ -13,6 +13,7 @@ import Tutorial from "@/components/Tutorial";
 import { ONLINE_COUNT_POLL_INTERVAL_MS } from "@/lib/constants";
 import { preloadGnubg } from "@/lib/gnubg";
 import { useIsNativeApp } from "@/hooks/useIsNativeApp";
+import { useFundsConfig } from "@/hooks/useFundsConfig";
 
 // ── Icons ──────────────────────────────────────────────────────
 
@@ -274,28 +275,42 @@ function PlayerRowStyled({
 export default function DashboardPage() {
   const router = useRouter();
   const { address, logout } = useAuth();
-  const { balance, isLoading: balanceLoading } = useBalance();
+  const { balance, status: balanceStatus, observedAt: balanceObservedAt, isLoading: balanceLoading } = useBalance();
   const isNativeApp = useIsNativeApp();
+  const funds = useFundsConfig();
   const social = useSocialContext();
   const { displayName, username, incomingRequests, pendingChallenges, acceptFriendRequest, rejectFriendRequest, acceptChallenge, declineChallenge } = social;
   const totalNotifications = (incomingRequests?.length ?? 0) + (pendingChallenges?.length ?? 0);
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const playerName = displayName || username || "Player";
-  // Live data state
+  // Live data state. Failures stay distinct from authoritative empty values.
   const [stats, setStats] = useState<PlayerStats | null>(null);
+  const [statsStatus, setStatsStatus] = useState<"loading" | "ready" | "local" | "unavailable">("loading");
   const [matches, setMatches] = useState<MatchResult[]>([]);
-  const [onlineCount, setOnlineCount] = useState<number>(0);
+  const [matchesStatus, setMatchesStatus] = useState<"loading" | "ready" | "local" | "unavailable">("loading");
+  const [onlineCount, setOnlineCount] = useState<number | null>(null);
+  const [onlineStatus, setOnlineStatus] = useState<"loading" | "ready" | "stale" | "unavailable">("loading");
+  const [dataVersion, setDataVersion] = useState(0);
 
   // Start loading GNUBG WASM early so AI games are ready faster
   useEffect(() => { preloadGnubg(); }, []);
 
   useEffect(() => {
     const local = getLocalStats();
+    const localMatches: MatchResult[] = getLocalMatches(4).map((match) => ({
+      gameId: match.id,
+      opponent: "local-ai",
+      opponentName: `${match.difficulty[0].toUpperCase()}${match.difficulty.slice(1)} AI`,
+      result: match.result,
+      resultType: match.resultType,
+      timestamp: match.timestamp,
+    }));
+    setStatsStatus("loading");
+    setMatchesStatus("loading");
 
-    // Merge server stats with local AI stats
     if (address) {
-      fetchStats(address).then((serverStats) => {
+      void fetchStats(address).then((serverStats) => {
         setStats({
           wins: serverStats.wins + local.wins,
           losses: serverStats.losses + local.losses,
@@ -305,8 +320,8 @@ export default function DashboardPage() {
           rating: serverStats.rating,
           ratingChange: serverStats.ratingChange,
         });
+        setStatsStatus("ready");
       }).catch(() => {
-        // Server unavailable — show local stats only
         if (local.totalGames > 0) {
           setStats({
             wins: local.wins,
@@ -317,12 +332,21 @@ export default function DashboardPage() {
             rating: 0,
             ratingChange: 0,
           });
+          setStatsStatus("local");
+        } else {
+          setStats(null);
+          setStatsStatus("unavailable");
         }
       });
-      fetchMatches(address, 4).then(setMatches).catch(() => {});
-    } else if (local.totalGames > 0) {
-      // No address (not logged in) — show local AI stats
-      setStats({
+      void fetchMatches(address, 4).then((serverMatches) => {
+        setMatches([...serverMatches, ...localMatches].sort((a, b) => b.timestamp - a.timestamp).slice(0, 4));
+        setMatchesStatus("ready");
+      }).catch(() => {
+        setMatches(localMatches);
+        setMatchesStatus(localMatches.length > 0 ? "local" : "unavailable");
+      });
+    } else {
+      setStats(local.totalGames > 0 ? {
         wins: local.wins,
         losses: local.losses,
         totalGames: local.totalGames,
@@ -330,28 +354,34 @@ export default function DashboardPage() {
         currentStreakType: local.currentStreakType,
         rating: 0,
         ratingChange: 0,
-      });
+      } : null);
+      setStatsStatus(local.totalGames > 0 ? "local" : "unavailable");
+      setMatches(localMatches);
+      setMatchesStatus(localMatches.length > 0 ? "local" : "ready");
     }
+  }, [address, dataVersion]);
 
-    fetchOnlineCount().then(setOnlineCount).catch(() => {});
-  }, [address]);
-
-  // Poll online player count every 30s
+  // Poll online player count without converting an outage into zero.
   useEffect(() => {
+    let disposed = false;
     const fetchOnline = async () => {
+      setOnlineStatus((current) => current === "ready" || current === "stale" ? "stale" : "loading");
       try {
-        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "";
-        const apiBase = wsUrl.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://");
-        const res = await fetch(`${apiBase}/api/online-count`);
-        if (res.ok) {
-          const data = await res.json();
-          setOnlineCount(data.count ?? null);
+        const count = await fetchOnlineCount();
+        if (!disposed) {
+          setOnlineCount(count);
+          setOnlineStatus("ready");
         }
-      } catch {}
+      } catch {
+        if (!disposed) setOnlineStatus((current) => current === "ready" || current === "stale" ? "stale" : "unavailable");
+      }
     };
-    fetchOnline();
-    const interval = setInterval(fetchOnline, ONLINE_COUNT_POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    void fetchOnline();
+    const interval = setInterval(() => { void fetchOnline(); }, ONLINE_COUNT_POLL_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+    };
   }, []);
 
   const onlineFriends = social.friends.filter(f => f.online);
@@ -462,7 +492,13 @@ export default function DashboardPage() {
               fontFamily: "var(--font-body)",
             }}
           >
-            {onlineCount > 0 ? `${onlineCount.toLocaleString()} players online right now` : "Welcome to Backgammon"}
+            {onlineStatus === "ready" && onlineCount !== null
+              ? onlineCount > 0 ? `${onlineCount.toLocaleString()} players online right now` : "No other players are currently visible online"
+              : onlineStatus === "stale" && onlineCount !== null
+                ? `Last observed online: ${onlineCount.toLocaleString()}`
+                : onlineStatus === "unavailable"
+                  ? "Online count unavailable; free play is still available"
+                  : "Checking who is online…"}
           </p>
         </div>
 
@@ -776,24 +812,34 @@ export default function DashboardPage() {
                 )}
 
                 {/* Footer link to social page */}
-                <div
+                <button
+                  type="button"
                   onClick={() => { setNotifOpen(false); router.push("/social"); }}
                   style={{
-                    padding: "10px 14px", textAlign: "center", cursor: "pointer",
-                    fontSize: "0.75rem", fontWeight: 600, color: "var(--color-gold-primary)",
+                    width: "100%",
+                    padding: "10px 14px",
+                    textAlign: "center",
+                    cursor: "pointer",
+                    fontSize: "0.75rem",
+                    fontWeight: 600,
+                    color: "var(--color-gold-primary)",
+                    border: "none",
                     borderTop: "1px solid var(--color-border-subtle)",
+                    background: "transparent",
                   }}
                 >
                   View all friends &amp; activity
-                </div>
+                </button>
               </div>
             )}
           </div>
 
           {/* Wallet */}
           {!isNativeApp && (
-          <div
-            onClick={() => router.push("/wallet")}
+          <button
+            type="button"
+            onClick={() => router.push("/wallet#how-your-balance-works")}
+            aria-label="Open your balance and how it works"
             style={{
               display: "flex",
               alignItems: "center",
@@ -813,18 +859,11 @@ export default function DashboardPage() {
                 fontFamily: "var(--font-mono)",
               }}
             >
-              {balanceLoading || balance === null ? "$--" : `$${balance}`}
+              {balanceLoading ? "Checking…" : balance === null ? "Unavailable" : balance}
+              {!balanceLoading && balance !== null && <span className="block text-[0.625rem] font-sans font-normal">{balanceStatus === "stale" ? "Stale Xion on-chain reading — refresh before money actions" : balanceObservedAt ? `Xion on-chain · as of ${new Date(balanceObservedAt).toLocaleString()}` : "verUSD balance · how it works"}</span>}
+              {funds.status === "ready" && funds.config.testFunds && <span className="block text-[0.625rem] font-sans">TEST FUNDS ONLY — no cash value</span>}
             </span>
-            <span
-              style={{
-                fontSize: "0.625rem",
-                color: "var(--color-text-secondary)",
-                fontFamily: "var(--font-body)",
-              }}
-            >
-              USDC
-            </span>
-          </div>
+          </button>
           )}
 
           {/* Logout */}
@@ -853,6 +892,57 @@ export default function DashboardPage() {
 
       {/* Play Mode Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5" style={{ marginBottom: 40 }}>
+
+        <Card className="hover:shadow-elevated hover:-translate-y-px transition-all cursor-pointer">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 16,
+            }}
+          >
+            {Icons.users("var(--color-gold-light)")}
+            <h3
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: "1.625rem",
+                fontWeight: 700,
+                margin: 0,
+                color: "var(--color-text-primary)",
+              }}
+            >
+              Find an opponent
+            </h3>
+          </div>
+          <p
+            style={{
+              fontSize: "0.875rem",
+              color: "var(--color-text-muted)",
+              margin: "0 0 20px",
+              lineHeight: 1.5,
+            }}
+          >
+            Join the free rated queue and play the next available opponent.
+          </p>
+          <button
+            onClick={() => router.push("/matchmaking")}
+            style={{
+              width: "100%",
+              padding: "14px 20px",
+              borderRadius: 6,
+              border: "none",
+              background: "var(--color-gold-primary)",
+              color: "var(--color-accent-fg)",
+              fontSize: "0.875rem",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "var(--font-body)",
+            }}
+          >
+            Find an opponent
+          </button>
+        </Card>
 
         {/* Play a Friend — spans full width */}
         <Card className="md:col-span-2 hover:shadow-elevated hover:-translate-y-px transition-all cursor-pointer">
@@ -1020,6 +1110,7 @@ export default function DashboardPage() {
                 Your Stats
               </h3>
               <button
+                onClick={() => router.push("/profile?tab=stats")}
                 style={{
                   background: "none",
                   border: "none",
@@ -1032,14 +1123,14 @@ export default function DashboardPage() {
                   fontFamily: "var(--font-body)",
                 }}
               >
-                View all {Icons.chevron("var(--color-text-secondary)")}
+                View statistics {Icons.chevron("var(--color-text-secondary)")}
               </button>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
               <Stat
                 label="Rating"
-                value={stats ? stats.rating.toLocaleString() : "--"}
-                sub={stats && stats.ratingChange !== 0 ? `${stats.ratingChange > 0 ? "↑" : "↓"} ${Math.abs(stats.ratingChange)}` : undefined}
+                value={statsStatus === "ready" && stats ? stats.rating.toLocaleString() : "--"}
+                sub={statsStatus === "ready" && stats && stats.ratingChange !== 0 ? `${stats.ratingChange > 0 ? "↑" : "↓"} ${Math.abs(stats.ratingChange)}` : undefined}
               />
               <div style={{ width: 1, background: "var(--color-border-subtle)" }} />
               <Stat label="W / L" value={stats ? `${stats.wins}/${stats.losses}` : "--"} />
@@ -1051,6 +1142,18 @@ export default function DashboardPage() {
                 value={stats && stats.currentStreak > 0 ? `${stats.currentStreak}${stats.currentStreakType}` : "--"}
               />
             </div>
+            {statsStatus !== "ready" && (
+              <div role={statsStatus === "unavailable" ? "alert" : "status"} className="mt-4 flex flex-wrap items-center justify-center gap-3 text-sm text-[var(--color-text-muted)]">
+                <span>
+                  {statsStatus === "loading"
+                    ? "Loading statistics…"
+                    : statsStatus === "local"
+                      ? "Online rating unavailable. Showing local AI results only."
+                      : "Statistics are temporarily unavailable."}
+                </span>
+                {statsStatus === "unavailable" && <button type="button" className="min-h-11 underline" onClick={() => setDataVersion((value) => value + 1)}>Retry</button>}
+              </div>
+            )}
           </Card>
 
           {/* Recent Matches */}
@@ -1077,6 +1180,7 @@ export default function DashboardPage() {
                 Recent Matches
               </h3>
               <button
+                onClick={() => router.push("/profile?tab=history")}
                 style={{
                   background: "none",
                   border: "none",
@@ -1089,48 +1193,42 @@ export default function DashboardPage() {
                   fontFamily: "var(--font-body)",
                 }}
               >
-                Full history {Icons.chevron("var(--color-text-secondary)")}
+                Match history {Icons.chevron("var(--color-text-secondary)")}
               </button>
             </div>
-            {matches.length > 0 ? matches.map((m, i) => (
-              <MatchRowStyled
-                key={i}
-                opponent={m.opponentName || m.opponent.slice(0, 10)}
-                result={m.result}
-                score={m.resultType}
-                pr="--"
-                date={timeAgo(m.timestamp)}
-              />
-            )) : (
-              <div style={{ padding: "24px 0", textAlign: "center" }}>
-                <div style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginBottom: 12 }}>
-                  No recent matches yet. Start your first game!
-                </div>
-                <button
-                  onClick={() => router.push("/ai-match")}
-                  style={{
-                    padding: "10px 20px",
-                    borderRadius: 6,
-                    border: "none",
-                    background: "var(--color-gold-primary)",
-                    color: "var(--color-accent-fg, var(--color-bg-deepest))",
-                    fontSize: "0.8125rem",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    fontFamily: "var(--font-body)",
-                    minHeight: 44,
-                  }}
-                >
-                  Play vs AI
-                </button>
+            {matchesStatus === "loading" ? (
+              <p role="status" className="py-6 text-center text-sm text-[var(--color-text-muted)]">Loading recent matches…</p>
+            ) : matchesStatus === "unavailable" ? (
+              <div role="alert" className="py-6 text-center text-sm text-[var(--color-text-muted)]">
+                <p>Recent matches are temporarily unavailable. No empty history has been assumed.</p>
+                <button type="button" className="mt-2 min-h-11 underline" onClick={() => setDataVersion((value) => value + 1)}>Retry match history</button>
               </div>
+            ) : (
+              <>
+                {matchesStatus === "local" && <p role="status" className="mb-3 text-sm text-[var(--color-text-muted)]">Online history unavailable. Showing local AI games.</p>}
+                {matches.length > 0 ? matches.map((match) => (
+                  <MatchRowStyled
+                    key={match.gameId}
+                    opponent={match.opponentName || match.opponent.slice(0, 10)}
+                    result={match.result}
+                    score={match.resultType}
+                    pr="--"
+                    date={timeAgo(match.timestamp)}
+                  />
+                )) : (
+                  <div className="py-6 text-center">
+                    <p className="mb-3 text-sm text-[var(--color-text-muted)]">No recent matches yet. Start your first game.</p>
+                    <button type="button" onClick={() => router.push("/ai-match")} className="btn-primary min-h-11">Play vs AI</button>
+                  </div>
+                )}
+              </>
             )}
           </Card>
         </div>
 
         {/* RIGHT COLUMN */}
         <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
-          {/* Provably Fair */}
+          {/* Dice verification */}
           <Card
             style={{
               background: "var(--color-bg-elevated)",
@@ -1156,7 +1254,7 @@ export default function DashboardPage() {
                   color: "var(--color-text-primary)",
                 }}
               >
-                Provably Fair
+                Dice verification
               </h3>
             </div>
             <p
@@ -1167,8 +1265,8 @@ export default function DashboardPage() {
                 lineHeight: 1.5,
               }}
             >
-              Every dice roll is cryptographically verified. Check any roll
-              anytime.
+              Games with recorded randomness commitments expose a proof status and the inputs
+              needed to review each roll. A missing or failed proof is shown as unverified.
             </p>
             <button
               onClick={() => router.push("/verify-rolls")}

@@ -1,11 +1,36 @@
 import type { NextConfig } from "next";
+import { fileURLToPath } from "node:url";
+
+const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
+
+const sandboxFixturesEnabled = process.env.NODE_ENV === "development"
+  && process.env.NEXT_PUBLIC_E2E_SANDBOX === "1";
+const sandboxAliases: Record<string, string> = {
+  "@burnt-labs/abstraxion": fileURLToPath(new URL("./src/test-fixtures/abstraxion.tsx", import.meta.url)),
+  "@/lib/plaid-link": fileURLToPath(new URL("./src/test-fixtures/plaid-link.ts", import.meta.url)),
+};
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    root: workspaceRoot,
+    ...(sandboxFixturesEnabled ? { resolveAlias: sandboxAliases } : {}),
+  },
   transpilePackages: [
     "@xion-beginner/ui",
     "@xion-beginner/backgammon-core",
     "@burnt-labs/abstraxion",
   ],
+  webpack(config) {
+    if (!sandboxFixturesEnabled) return config;
+    config.resolve ??= {};
+    config.resolve.alias = {
+      ...(config.resolve.alias as Record<string, string> | undefined),
+      ...sandboxAliases,
+      [fileURLToPath(new URL("./src/lib/plaid-link", import.meta.url))]: sandboxAliases["@/lib/plaid-link"],
+      [fileURLToPath(new URL("./src/lib/plaid-link.ts", import.meta.url))]: sandboxAliases["@/lib/plaid-link"],
+    };
+    return config;
+  },
   async headers() {
     return [
       {
@@ -22,22 +47,6 @@ const nextConfig: NextConfig = {
         source: "/:path*",
         headers: [
           {
-            key: "Content-Security-Policy",
-            value: [
-              "default-src 'self'",
-              "worker-src 'self' blob:",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:",
-              "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: blob:",
-              "font-src 'self' data: https://*.crossmint.com https://dynamic-static-assets.com",
-              "connect-src 'self' https://*.burnt.com https://*.vercel.com https://*.vercel-storage.com ws://localhost:* wss://*.railway.app wss://*.gammon.nyc wss://api.gammon.nyc https://*.gammon.nyc https://api.gammon.nyc https://*.crossmint.com https://dynamic-static-assets.com https://gammon-server.fly.dev wss://gammon-server.fly.dev https://*.plaid.com https://cdn.plaid.com https://rpc.xion-testnet-2.burnt.com",
-              "frame-src 'self' https://*.burnt.com https://*.crossmint.com",
-              "form-action 'self'",
-              "base-uri 'self'",
-              "object-src 'none'",
-            ].join("; "),
-          },
-          {
             key: "X-Frame-Options",
             value: "DENY",
           },
@@ -48,10 +57,6 @@ const nextConfig: NextConfig = {
           {
             key: "Referrer-Policy",
             value: "strict-origin-when-cross-origin",
-          },
-          {
-            key: "X-XSS-Protection",
-            value: "1; mode=block",
           },
           {
             key: "Permissions-Policy",

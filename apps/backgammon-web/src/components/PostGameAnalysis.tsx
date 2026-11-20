@@ -332,7 +332,7 @@ function CandidateMoveRow({ notation, equityDiff, isPlayed, isBest, isSelected, 
   notation: string; equityDiff: string; isPlayed: boolean; isBest: boolean; isSelected: boolean; onClick: () => void;
 }) {
   return (
-    <div onClick={onClick} style={{
+    <button type="button" aria-pressed={isSelected} aria-label={`${notation}${isPlayed ? ", played move" : ""}${isBest ? ", best move" : ""}, equity ${equityDiff}`} onClick={onClick} style={{
       display: "flex", alignItems: "center", justifyContent: "space-between",
       padding: "8px 12px", borderRadius: R.button,
       background: isPlayed ? C.gold.primary : isSelected ? C.bg.deep : "transparent",
@@ -343,6 +343,7 @@ function CandidateMoveRow({ notation, equityDiff, isPlayed, isBest, isSelected, 
       borderBottom: isSelected && !isPlayed ? `1px solid ${C.border.subtle}` : !isPlayed ? `1px solid ${C.border.subtle}` : "none",
       borderLeft: isSelected && !isPlayed ? `1px solid ${C.border.subtle}` : "none",
       boxShadow: isSelected && !isPlayed ? "var(--shadow-card)" : "none",
+      width: "100%", textAlign: "left", font: "inherit",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
         <div style={{
@@ -372,7 +373,7 @@ function CandidateMoveRow({ notation, equityDiff, isPlayed, isBest, isSelected, 
           {isBest && !isPlayed ? equityDiff : `(${equityDiff})`}
         </span>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -404,12 +405,13 @@ function MoveRow({ moveNum, dice, move, equity, error, isBlunder, isSelected, on
   onClick: () => void; player?: Player;
 }) {
   return (
-    <div onClick={onClick} style={{
+    <button type="button" aria-pressed={isSelected} aria-label={`Move ${moveNum}, dice ${dice.join(" and ")}, ${move}${error ? `, ${error}` : ""}`} onClick={onClick} style={{
       display: "flex", alignItems: "center", gap: 10,
       padding: "8px 12px", borderRadius: R.button,
       background: isSelected ? C.bg.deep : "transparent",
       border: isSelected ? `1px solid ${C.border.subtle}` : "1px solid transparent",
       cursor: "pointer", transition: "background 0.1s",
+      width: "100%", textAlign: "left", font: "inherit",
     }}>
       <span style={{ width: 28, fontSize: "0.75rem", fontWeight: W.semibold, color: C.text.muted, textAlign: "center" }}>{moveNum}</span>
       {player && (
@@ -445,7 +447,7 @@ function MoveRow({ moveNum, dice, move, equity, error, isBlunder, isSelected, on
           minWidth: 50, textAlign: "center",
         }}>{error}</span>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -629,7 +631,7 @@ export function PostGameAnalysis({
   const mySummary = analysis ? (myColor === "white" ? analysis.whiteSummary : analysis.blackSummary) : null;
   const oppSummary = analysis ? (myColor === "white" ? analysis.blackSummary : analysis.whiteSummary) : null;
 
-  // Equity history for graph (mock fallback)
+  // Derive the graph from recorded move equities when no aggregate series was stored.
   // Append final game result: +1 if white won, -1 if black won
   const baseEquityHistory = analysis?.equityHistory ?? [0, ...displayMoves.map(m => m.equity)];
   const equityHistory = winner
@@ -938,11 +940,12 @@ export function PostGameAnalysis({
                   {analysisMode === "log" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 260, overflow: "auto" }}>
                       {displayMoves.map(m => (
-                        <div key={m.moveNum} onClick={() => selectMove(m.moveNum)} style={{
+                        <button key={m.moveNum} type="button" aria-pressed={selectedMove === m.moveNum} aria-label={`Move ${m.moveNum}, dice ${m.dice.join(" and ")}, ${m.move}${m.error ? `, ${m.error}` : ""}`} onClick={() => selectMove(m.moveNum)} style={{
                           display: "flex", alignItems: "center", gap: 8,
                           padding: "6px 10px", borderRadius: R.button, cursor: "pointer",
                           background: selectedMove === m.moveNum ? C.bg.deep : "transparent",
                           border: selectedMove === m.moveNum ? `1px solid ${C.border.subtle}` : "1px solid transparent",
+                          width: "100%", textAlign: "left", font: "inherit",
                         }}>
                           <span style={{ fontSize: "0.625rem", fontWeight: W.semibold, color: C.text.muted, width: 18 }}>{m.moveNum}</span>
                           <div style={{ display: "flex", gap: 2 }}>
@@ -962,7 +965,7 @@ export function PostGameAnalysis({
                               color: m.isBlunder ? C.text.primary : C.text.secondary,
                             }}>{m.error[0]}</span>
                           )}
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -1041,12 +1044,13 @@ export function PostGameAnalysis({
                   <SectionHeader title="Moves" />
                   <div className="max-h-[200px] lg:max-h-[400px]" style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "auto" }}>
                     {displayMoves.map(m => (
-                      <div key={m.moveNum} onClick={() => selectMove(m.moveNum)} style={{
+                      <button key={m.moveNum} type="button" aria-pressed={selectedMove === m.moveNum} aria-label={`Move ${m.moveNum}, dice ${m.dice.join(" and ")}, ${m.move}${m.error ? `, ${m.error}` : ""}`} onClick={() => selectMove(m.moveNum)} style={{
                         display: "flex", alignItems: "center", gap: 6,
                         padding: "6px 8px", borderRadius: R.button, cursor: "pointer",
                         background: selectedMove === m.moveNum ? C.bg.deep : "transparent",
                         border: selectedMove === m.moveNum ? `1px solid ${C.border.subtle}` : "1px solid transparent",
                         transition: "background 0.1s",
+                        width: "100%", textAlign: "left", font: "inherit",
                       }}>
                         <span style={{ fontSize: "0.625rem", fontWeight: W.semibold, color: C.text.muted, width: 18, textAlign: "center" }}>{m.moveNum}</span>
                         <div style={{ display: "flex", gap: 2 }}>
@@ -1070,7 +1074,7 @@ export function PostGameAnalysis({
                             color: m.isBlunder ? C.text.primary : C.text.secondary,
                           }}>{m.error[0]}</span>
                         )}
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </Card>

@@ -1,295 +1,521 @@
-/**
- * Brale API client for ACH on/off ramp.
- *
- * Onramp (ACH Debit): User links bank via Plaid → pull USD → mint stablecoins to XION wallet
- * Offramp (ACH Credit): Stablecoins in Brale custodial → send USD to user's bank
- *
- * Brale supports xion and xion_testnet as transfer types natively.
- * Docs: https://docs.brale.xyz
- */
-
 import { logger } from "./logger.js";
+import { fundsGate } from "./funds-config.js";
 
-const BRALE_BASE_URL = process.env.BRALE_API_URL || "https://api.brale.xyz";
-const BRALE_CLIENT_ID = process.env.BRALE_ACCOUNT_ID || ""; // client_id = account_id
-const BRALE_CLIENT_SECRET = process.env.BRALE_API_KEY || "";
-const BRALE_ACCOUNT_ID = process.env.BRALE_ACCOUNT_ID || "";
-const BRALE_NETWORK = process.env.BRALE_NETWORK || "xion_testnet";
+export type BraleTransferStatus =
+  | "pending"
+  | "processing"
+  | "complete"
+  | "canceled"
+  | "failed"
+  | "refunding"
+  | "refunded";
 
-// ── OAuth2 Token Management ─────────────────────────────
-
-let cachedToken: string | null = null;
-let tokenExpiresAt = 0;
-
-/** Exchange client credentials for a short-lived Bearer token (OAuth2) */
-async function getAccessToken(): Promise<string> {
-  // Return cached token if still valid (with 60s buffer)
-  if (cachedToken && Date.now() < tokenExpiresAt - 60_000) {
-    return cachedToken;
-  }
-
-  const credentials = Buffer.from(`${BRALE_CLIENT_ID}:${BRALE_CLIENT_SECRET}`).toString("base64");
-
-  const res = await fetch("https://auth.brale.xyz/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${credentials}`,
-    },
-    body: "grant_type=client_credentials",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    logger.error("Brale OAuth token exchange failed", { status: res.status, body: text });
-    throw new Error(`Brale auth failed: ${res.status}`);
-  }
-
-  const data = await res.json();
-  cachedToken = data.access_token;
-  tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-
-  logger.info("Brale OAuth token acquired", { expiresIn: data.expires_in });
-  return cachedToken!;
+export type BraleAccountStatus = "complete" | "pending" | "documents_required" | "rejected" | "archived";
+export interface BraleTransferEndpoint {
+  readonly addressId: string;
+  readonly valueType: "USD" | "verUSD";
+  readonly transferType: TransferEndpoint["transferType"];
 }
 
-// ── API Request Helper ──────────────────────────────────
+export interface BraleTransfer {
+  readonly id: string;
+  readonly accountId: string;
+  readonly status: BraleTransferStatus;
+  readonly amount: { readonly value: string; readonly currency: "USD" };
+  readonly source: BraleTransferEndpoint;
+  readonly destination: BraleTransferEndpoint;
+  readonly chainTxHash?: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+}
 
-async function braleRequest(method: string, path: string, body?: object, idempotencyKey?: string): Promise<any> {
-  const token = await getAccessToken();
+export interface PlaidIdentity {
+  readonly legalName: string;
+  readonly emailAddress: string;
+  readonly phoneNumber?: string;
+  readonly dateOfBirth?: string;
+}
 
-  const hdrs: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
+export interface IndividualAccountInput {
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly dateOfBirth: string;
+  readonly email: string;
+  readonly phoneNumber: string;
+  readonly country: string;
+  readonly address: {
+    readonly streetLine1: string;
+    readonly streetLine2?: string;
+    readonly city: string;
+    readonly state?: string;
+    readonly postalCode: string;
   };
-  if (idempotencyKey) hdrs["Idempotency-Key"] = idempotencyKey;
-
-  // Brale requires Idempotency-Key on all POST requests
-  if (method === "POST" && !idempotencyKey) {
-    hdrs["Idempotency-Key"] = `${path}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-
-  const url = `${BRALE_BASE_URL}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: hdrs,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    // If 401, clear cached token so next request re-authenticates
-    if (res.status === 401) {
-      cachedToken = null;
-      tokenExpiresAt = 0;
-    }
-    logger.error("Brale API error", { method, path, status: res.status, body: text });
-    throw new Error(`Brale API ${res.status}: ${text}`);
-  }
-
-  return res.json();
+  readonly identity: { readonly number: string; readonly type: string };
+  readonly termsVersion: string;
+  readonly acceptedAt: string;
+  readonly ip: string;
+  readonly userAgent: string;
 }
 
-// ── Account ──────────────────────────────────────────────
+export interface TransferEndpoint {
+  readonly addressId: string;
+  readonly valueType: "USD" | "verUSD";
+  readonly transferType:
+    | "ach_debit"
+    | "ach_credit"
+    | "same_day_ach_credit"
+    | "fednow_credit"
+    | "verona"
+    | "verona_testnet";
+}
 
-export async function getAccountId(): Promise<string> {
-  // Always fetch from API to get the correct account ID
+export class BraleApiError extends Error {
+  readonly status: number;
+  readonly providerCode: string | null;
+  readonly retryable: boolean;
+
+  constructor(status: number, providerCode: string | null) {
+    super("Payment provider request failed");
+    this.name = "BraleApiError";
+    this.status = status;
+    this.providerCode = providerCode;
+    this.retryable = status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+  }
+}
+
+interface BraleClientOptions {
+  readonly accountId: string;
+  readonly apiKey: string;
+  readonly baseUrl?: string;
+  readonly authUrl?: string;
+  readonly fetchImpl?: typeof fetch;
+}
+
+const KSUID = /^[A-Za-z0-9]{20,40}$/;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{16,200}$/;
+const TRANSFER_STATUSES: Record<BraleTransferStatus, true> = {
+  pending: true,
+  processing: true,
+  complete: true,
+  canceled: true,
+  failed: true,
+  refunding: true,
+  refunded: true,
+};
+
+const TRANSFER_TYPES: Record<TransferEndpoint["transferType"], true> = {
+  ach_debit: true,
+  ach_credit: true,
+  same_day_ach_credit: true,
+  fednow_credit: true,
+  verona: true,
+  verona_testnet: true,
+};
+
+function requireHttpsUrl(value: string, label: string): string {
+  let parsed: URL;
   try {
-    const data = await braleRequest("GET", "/accounts");
-    logger.info("Brale accounts response", { data: JSON.stringify(data) });
-    const id = data.accounts?.[0]?.id || data.data?.[0]?.id || BRALE_ACCOUNT_ID;
-    if (id !== BRALE_ACCOUNT_ID && BRALE_ACCOUNT_ID) {
-      logger.warn("Brale account ID mismatch", { env: BRALE_ACCOUNT_ID, api: id });
+    parsed = new URL(value);
+  } catch {
+    throw new TypeError(`Invalid ${label}`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.hash ||
+    parsed.pathname.includes("//") ||
+    parsed.search
+  ) throw new TypeError(`Invalid ${label}`);
+  return value.replace(/\/$/, "");
+}
+
+function requireResourceId(value: string, label: string): string {
+  if (!KSUID.test(value)) throw new TypeError(`Invalid ${label}`);
+  return value;
+}
+
+function requireIdempotencyKey(value: string): string {
+  if (!IDEMPOTENCY_KEY.test(value)) throw new TypeError("Invalid idempotency key");
+  return value;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Unexpected payment provider response");
+  return value as Record<string, unknown>;
+}
+
+function providerCode(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const candidate = record.type ?? record.code;
+  return typeof candidate === "string" && candidate.length <= 100 ? candidate : null;
+}
+
+export class BraleClient {
+  private readonly accountId: string;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly authUrl: string;
+  private readonly fetchImpl: typeof fetch;
+  private cachedToken: string | null = null;
+  private tokenExpiresAt = 0;
+
+  constructor(options: BraleClientOptions) {
+    this.accountId = requireResourceId(options.accountId, "Brale account ID");
+    if (!options.apiKey || options.apiKey.trim() !== options.apiKey) throw new TypeError("Brale API key is required");
+    this.apiKey = options.apiKey;
+    this.baseUrl = requireHttpsUrl(options.baseUrl ?? "https://api.brale.xyz", "Brale API URL");
+    this.authUrl = requireHttpsUrl(options.authUrl ?? "https://auth.brale.xyz/oauth2/token", "Brale OAuth URL");
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  get masterAccountId(): string {
+    return this.accountId;
+  }
+
+  private async accessToken(): Promise<string> {
+    if (this.cachedToken && Date.now() < this.tokenExpiresAt - 60_000) return this.cachedToken;
+
+    const credentials = Buffer.from(`${this.accountId}:${this.apiKey}`).toString("base64");
+    const response = await this.fetchImpl(this.authUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      logger.warn("Brale OAuth request failed", { status: response.status, code: providerCode(body) });
+      throw new BraleApiError(response.status, providerCode(body));
     }
-    return id;
-  } catch (err) {
-    logger.error("Brale accounts fetch failed", { error: String(err) });
-    return BRALE_ACCOUNT_ID;
+    const parsed = objectValue(body);
+    if (typeof parsed.access_token !== "string" || parsed.access_token.length < 16) {
+      throw new TypeError("Unexpected payment provider token response");
+    }
+    const expiresIn = typeof parsed.expires_in === "number" ? parsed.expires_in : 3_600;
+    this.cachedToken = parsed.access_token;
+    this.tokenExpiresAt = Date.now() + Math.max(60, expiresIn) * 1_000;
+    return parsed.access_token;
+  }
+
+  private async request(method: "GET" | "POST", path: string, body?: object, idempotencyKey?: string): Promise<unknown> {
+    if (method === "POST" && !idempotencyKey) throw new TypeError("Every provider POST requires a durable idempotency key");
+    const token = await this.accessToken();
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+    if (idempotencyKey) headers["Idempotency-Key"] = requireIdempotencyKey(idempotencyKey);
+
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const responseBody: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      if (response.status === 401) {
+        this.cachedToken = null;
+        this.tokenExpiresAt = 0;
+      }
+      const code = providerCode(responseBody);
+      logger.warn("Brale API request failed", { method, path, status: response.status, code });
+      throw new BraleApiError(response.status, code);
+    }
+    return responseBody;
+  }
+
+  async getAccount(accountId: string = this.accountId): Promise<{
+    id: string;
+    status: BraleAccountStatus;
+    programId: string;
+    capabilities: readonly string[];
+  }> {
+    const scopedAccountId = requireResourceId(accountId, "Brale account ID");
+    const response = objectValue(await this.request("GET", `/accounts/${scopedAccountId}`));
+    if (
+      response.id !== scopedAccountId ||
+      !["complete", "pending", "documents_required", "rejected", "archived"].includes(String(response.status)) ||
+      typeof response.program_id !== "string" ||
+      response.program_id.length === 0 ||
+      !Array.isArray(response.capabilities) ||
+      response.capabilities.length === 0 ||
+      response.capabilities.some((capability) => typeof capability !== "string" || capability.length === 0) ||
+      new Set(response.capabilities).size !== response.capabilities.length
+    ) {
+      throw new TypeError("Unexpected payment provider account response");
+    }
+    return {
+      id: scopedAccountId,
+      status: response.status as BraleAccountStatus,
+      programId: response.program_id,
+      capabilities: response.capabilities,
+    };
+  }
+
+  async createIndividualTransactionalAccount(input: IndividualAccountInput, idempotencyKey: string): Promise<{
+    id: string;
+    status: BraleAccountStatus;
+  }> {
+    const response = objectValue(await this.request(
+      "POST",
+      "/accounts",
+      {
+        entity_type: "individual",
+        account_type: "transactional",
+        verification_mode: "standard",
+        individual: {
+          first_name: input.firstName,
+          last_name: input.lastName,
+          date_of_birth: input.dateOfBirth,
+          email: input.email,
+          phone_number: input.phoneNumber,
+          country: input.country,
+          address: {
+            street_line_1: input.address.streetLine1,
+            ...(input.address.streetLine2 ? { street_line_2: input.address.streetLine2 } : {}),
+            city: input.address.city,
+            ...(input.address.state ? { state: input.address.state } : {}),
+            zip: input.address.postalCode,
+          },
+          identity: input.identity,
+        },
+        tos_attestation: {
+          version: input.termsVersion,
+          accepted_at: input.acceptedAt,
+          ip: input.ip,
+          user_agent: input.userAgent,
+        },
+      },
+      idempotencyKey,
+    ));
+    if (typeof response.id !== "string" || !["complete", "pending", "documents_required", "rejected", "archived"].includes(String(response.status))) {
+      throw new TypeError("Unexpected payment provider account response");
+    }
+    return {
+      id: requireResourceId(response.id, "managed account ID"),
+      status: response.status as BraleAccountStatus,
+    };
+  }
+
+  async createPlaidLinkToken(accountId: string, identity: PlaidIdentity, idempotencyKey: string): Promise<{
+    linkToken: string;
+    expiration: string;
+    callbackUrl: string;
+  }> {
+    const response = objectValue(await this.request(
+      "POST",
+      `/accounts/${requireResourceId(accountId, "managed account ID")}/plaid/link_token`,
+      {
+        legal_name: identity.legalName,
+        email_address: identity.emailAddress,
+        ...(identity.phoneNumber ? { phone_number: identity.phoneNumber } : {}),
+        ...(identity.dateOfBirth ? { date_of_birth: identity.dateOfBirth } : {}),
+        client_name: "Gammon",
+      },
+      idempotencyKey,
+    ));
+    if (typeof response.link_token !== "string" || typeof response.expiration !== "string" || typeof response.callback_url !== "string") {
+      throw new TypeError("Unexpected payment provider link response");
+    }
+    return {
+      linkToken: response.link_token,
+      expiration: response.expiration,
+      callbackUrl: response.callback_url,
+    };
+  }
+
+  async registerPlaidAccount(input: {
+    accountId: string;
+    publicToken: string;
+    customerWebhookUrl: string;
+    accountHolderType: "individual" | "business";
+    idempotencyKey: string;
+  }): Promise<{ addressId: string }> {
+    const response = objectValue(await this.request(
+      "POST",
+      `/accounts/${requireResourceId(input.accountId, "managed account ID")}/plaid/register-account`,
+      {
+        public_token: input.publicToken,
+        customer_webhook_url: input.customerWebhookUrl,
+        transfer_types: ["ach_debit", "ach_credit"],
+        account_holder_type: input.accountHolderType,
+      },
+      input.idempotencyKey,
+    ));
+    if (typeof response.address_id !== "string") throw new TypeError("Unexpected payment provider address response");
+    return { addressId: requireResourceId(response.address_id, "bank address ID") };
+  }
+
+  async registerExternalWallet(input: {
+    accountId: string;
+    walletAddress: string;
+    transferType: "verona" | "verona_testnet";
+    idempotencyKey: string;
+  }): Promise<{ addressId: string }> {
+    if (!/^xion1[023456789acdefghjklmnpqrstuvwxyz]{38,64}$/.test(input.walletAddress)) {
+      throw new TypeError("Invalid Verona wallet address");
+    }
+    const response = objectValue(await this.request(
+      "POST",
+      `/accounts/${requireResourceId(input.accountId, "managed account ID")}/addresses/external`,
+      {
+        name: `Gammon wallet ${input.walletAddress.slice(0, 10)}`,
+        address: input.walletAddress,
+        transfer_types: [input.transferType],
+      },
+      input.idempotencyKey,
+    ));
+    if (
+      typeof response.id !== "string" ||
+      (response.address !== undefined && response.address !== input.walletAddress) ||
+      (response.account_id !== undefined && response.account_id !== input.accountId)
+    ) throw new TypeError("Unexpected payment provider address response");
+    return { addressId: requireResourceId(response.id, "wallet address ID") };
+  }
+
+  async createInternalAddress(input: {
+    name: string;
+    transferType: "verona" | "verona_testnet";
+    idempotencyKey: string;
+  }): Promise<{ addressId: string; address: string }> {
+    const response = objectValue(await this.request(
+      "POST",
+      `/accounts/${this.accountId}/addresses/internal`,
+      { name: input.name, transfer_types: [input.transferType] },
+      input.idempotencyKey,
+    ));
+    if (
+      typeof response.id !== "string" ||
+      typeof response.address !== "string" ||
+      !/^xion1[023456789acdefghjklmnpqrstuvwxyz]{38,64}$/.test(response.address)
+    ) {
+      throw new TypeError("Unexpected payment provider internal address response");
+    }
+    return {
+      addressId: requireResourceId(response.id, "internal address ID"),
+      address: response.address,
+    };
+  }
+
+  async getAddress(accountId: string, addressId: string): Promise<{ id: string; status: "active" | "pending" | "documents_required" | "relink_required" | "disabled" | "rejected" | "archived" }> {
+    const scopedAccountId = requireResourceId(accountId, "managed account ID");
+    const scopedAddressId = requireResourceId(addressId, "provider address ID");
+    const response = objectValue(await this.request("GET", `/accounts/${scopedAccountId}/addresses/${scopedAddressId}`));
+    if (
+      response.id !== scopedAddressId ||
+      !["active", "pending", "documents_required", "relink_required", "disabled", "rejected", "archived"].includes(String(response.status))
+    ) throw new TypeError("Unexpected payment provider address response");
+    return {
+      id: scopedAddressId,
+      status: response.status as "active" | "pending" | "documents_required" | "relink_required" | "disabled" | "rejected" | "archived",
+    };
+  }
+
+  async createTransfer(input: {
+    amountUsd: string;
+    source: TransferEndpoint;
+    destination: TransferEndpoint;
+    idempotencyKey: string;
+    brandAccountId?: string;
+  }): Promise<BraleTransfer> {
+    const response = objectValue(await this.request(
+      "POST",
+      `/accounts/${this.accountId}/transfers`,
+      {
+        amount: { value: input.amountUsd, currency: "USD" },
+        source: {
+          address_id: requireResourceId(input.source.addressId, "source address ID"),
+          value_type: input.source.valueType,
+          transfer_type: input.source.transferType,
+        },
+        destination: {
+          address_id: requireResourceId(input.destination.addressId, "destination address ID"),
+          value_type: input.destination.valueType,
+          transfer_type: input.destination.transferType,
+        },
+        brand: { account_id: requireResourceId(input.brandAccountId ?? this.accountId, "brand account ID") },
+      },
+      input.idempotencyKey,
+    ));
+    return this.parseTransfer(response);
+  }
+
+  async getTransfer(transferId: string): Promise<BraleTransfer> {
+    const response = objectValue(await this.request(
+      "GET",
+      `/accounts/${this.accountId}/transfers/${requireResourceId(transferId, "transfer ID")}`,
+    ));
+    return this.parseTransfer(response);
+  }
+
+  private parseTransferEndpoint(value: unknown, label: string): BraleTransferEndpoint {
+    const endpoint = objectValue(value);
+    if (
+      typeof endpoint.address_id !== "string" ||
+      (endpoint.value_type !== "USD" && endpoint.value_type !== "verUSD") ||
+      typeof endpoint.transfer_type !== "string" ||
+      !Object.hasOwn(TRANSFER_TYPES, endpoint.transfer_type)
+    ) {
+      throw new TypeError(`Unexpected payment provider ${label} transfer endpoint`);
+    }
+    return {
+      addressId: requireResourceId(endpoint.address_id, `${label} address ID`),
+      valueType: endpoint.value_type,
+      transferType: endpoint.transfer_type as TransferEndpoint["transferType"],
+    };
+  }
+
+  private parseTransfer(response: Record<string, unknown>): BraleTransfer {
+    if (
+      typeof response.id !== "string" ||
+      typeof response.account_id !== "string" ||
+      typeof response.status !== "string" ||
+      !Object.hasOwn(TRANSFER_STATUSES, response.status)
+    ) {
+      throw new TypeError("Unexpected payment provider transfer response");
+    }
+    const amount = objectValue(response.amount);
+    if (typeof amount.value !== "string" || amount.currency !== "USD") {
+      throw new TypeError("Unexpected payment provider amount response");
+    }
+    const transactionHash = response.transaction_hash ?? response.tx_hash;
+    if (
+      (response.transaction_hash !== undefined && response.tx_hash !== undefined && response.transaction_hash !== response.tx_hash) ||
+      (transactionHash !== undefined && (typeof transactionHash !== "string" || !/^[0-9A-Fa-f]{64}$/.test(transactionHash)))
+    ) {
+      throw new TypeError("Unexpected payment provider chain transaction response");
+    }
+    return {
+      id: requireResourceId(response.id, "transfer ID"),
+      accountId: requireResourceId(response.account_id, "transfer account ID"),
+      status: response.status as BraleTransferStatus,
+      amount: { value: amount.value, currency: "USD" },
+      source: this.parseTransferEndpoint(response.source, "source"),
+      destination: this.parseTransferEndpoint(response.destination, "destination"),
+      ...(transactionHash ? { chainTxHash: transactionHash.toUpperCase() } : {}),
+      ...(typeof response.created_at === "string" ? { createdAt: response.created_at } : {}),
+      ...(typeof response.updated_at === "string" ? { updatedAt: response.updated_at } : {}),
+    };
   }
 }
 
-// ── Plaid Link (direct Plaid API, not via Brale) ────────
-
-const PLAID_CLIENT_ID = process.env.PLAID_CLIENT_ID || "";
-const PLAID_SECRET = process.env.PLAID_SECRET || "";
-const PLAID_ENV = process.env.PLAID_ENV || "sandbox"; // sandbox | production
-const PLAID_BASE_URL = PLAID_ENV === "production"
-  ? "https://production.plaid.com"
-  : "https://sandbox.plaid.com";
-
-/** Create a Plaid link token directly via Plaid API */
-export async function createPlaidLinkToken(
-  _accountId: string,
-  userInfo: { legalName: string; email: string; phone?: string; dob?: string },
-  redirectUri?: string,
-): Promise<{ linkToken: string }> {
-  if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
-    throw new Error("Plaid not configured");
+export function createConfiguredBraleClient(): BraleClient | null {
+  const accountId = process.env.BRALE_ACCOUNT_ID;
+  const apiKey = process.env.BRALE_API_KEY;
+  if (!accountId || !apiKey || accountId.trim() !== accountId || apiKey.trim() !== apiKey) return null;
+  if (fundsGate.config.mode === "verusd_production" && (fundsGate.config.providerIdentityBlockers?.length ?? 0) > 0) {
+    return null;
   }
-
-  const body: any = {
-    client_id: PLAID_CLIENT_ID,
-    secret: PLAID_SECRET,
-    client_name: "Gammon",
-    language: "en",
-    country_codes: ["US"],
-    user: {
-      client_user_id: `user_${Buffer.from(userInfo.email).toString("base64url").slice(0, 20)}`,
-      legal_name: userInfo.legalName,
-      email_address: userInfo.email,
-    },
-    products: ["auth"],
-  };
-  // redirect_uri is optional and must be registered in Plaid dashboard first
-  // if (redirectUri) body.redirect_uri = redirectUri;
-
-  const res = await fetch(`${PLAID_BASE_URL}/link/token/create`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  return new BraleClient({
+    accountId,
+    apiKey,
+    baseUrl: process.env.BRALE_API_URL,
+    authUrl: process.env.BRALE_AUTH_URL,
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    logger.error("Plaid link token error", { status: res.status, body: text });
-    throw new Error(`Plaid API ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
-  return { linkToken: data.link_token };
-}
-
-/** Exchange Plaid public token after user completes Plaid Link */
-export async function registerPlaidAccount(accountId: string, publicToken: string): Promise<{ addressId: string }> {
-  const data = await braleRequest("POST", `/accounts/${accountId}/plaid/register-account`, {
-    public_token: publicToken,
-  });
-  return { addressId: data.address_id || data.id };
-}
-
-// ── Addresses ───────────────────────────────────────────
-
-/** Register an external XION wallet address for receiving stablecoins */
-export async function registerWalletAddress(
-  accountId: string,
-  walletAddress: string,
-  label?: string,
-): Promise<{ addressId: string }> {
-  const data = await braleRequest("POST", `/accounts/${accountId}/addresses/external`, {
-    address: walletAddress,
-    network: BRALE_NETWORK,
-    transfer_types: [BRALE_NETWORK],
-    label: label || `XION wallet ${walletAddress.slice(0, 10)}...`,
-  });
-  return { addressId: data.id };
-}
-
-/** Register a bank account for ACH credit (offramp) via direct entry */
-export async function registerBankAccount(
-  accountId: string,
-  routingNumber: string,
-  accountNumber: string,
-  accountType: "checking" | "savings",
-  holderName: string,
-): Promise<{ addressId: string }> {
-  const data = await braleRequest("POST", `/accounts/${accountId}/addresses/external`, {
-    routing_number: routingNumber,
-    account_number: accountNumber,
-    account_type: accountType,
-    holder_name: holderName,
-    transfer_types: ["ach_credit", "same_day_ach_credit"],
-  });
-  return { addressId: data.id };
-}
-
-/** Get the Brale custodial (internal) address for holding stablecoins */
-export async function getCustodialAddress(accountId: string): Promise<{ addressId: string; address: string } | null> {
-  const data = await braleRequest("GET", `/accounts/${accountId}/addresses?type=internal`);
-  const addr = data.data?.[0];
-  if (!addr) return null;
-  return { addressId: addr.id, address: addr.address };
-}
-
-// ── Transfers ───────────────────────────────────────────
-
-export interface TransferResult {
-  id: string;
-  status: "pending" | "processing" | "complete" | "canceled" | "failed";
-  amount: { value: string; currency: string };
-}
-
-/** ACH Debit: Pull USD from bank → mint stablecoins to XION wallet */
-export async function createOnrampTransfer(
-  accountId: string,
-  bankAddressId: string,
-  walletAddressId: string,
-  amountUsd: string,
-  idempotencyKey: string,
-): Promise<TransferResult> {
-  const data = await braleRequest(
-    "POST",
-    `/accounts/${accountId}/transfers`,
-    {
-      amount: { value: amountUsd, currency: "USD" },
-      source: {
-        address_id: bankAddressId,
-        value_type: "USD",
-        transfer_type: "ach_debit",
-      },
-      destination: {
-        address_id: walletAddressId,
-        value_type: "SBC",
-        transfer_type: BRALE_NETWORK,
-      },
-      brand: { account_id: accountId },
-    },
-    idempotencyKey,
-  );
-
-  logger.info("Onramp transfer created", { id: data.id, amount: amountUsd, status: data.status });
-  return { id: data.id, status: data.status, amount: data.amount };
-}
-
-/** ACH Credit: Redeem stablecoins → send USD to bank */
-export async function createOfframpTransfer(
-  accountId: string,
-  custodialAddressId: string,
-  bankAddressId: string,
-  amountUsd: string,
-  idempotencyKey: string,
-  sameDay: boolean = false,
-): Promise<TransferResult> {
-  const data = await braleRequest(
-    "POST",
-    `/accounts/${accountId}/transfers`,
-    {
-      amount: { value: amountUsd, currency: "USD" },
-      source: {
-        address_id: custodialAddressId,
-        value_type: "SBC",
-        transfer_type: BRALE_NETWORK,
-      },
-      destination: {
-        address_id: bankAddressId,
-        value_type: "USD",
-        transfer_type: sameDay ? "same_day_ach_credit" : "ach_credit",
-      },
-    },
-    idempotencyKey,
-  );
-
-  logger.info("Offramp transfer created", { id: data.id, amount: amountUsd, status: data.status, sameDay });
-  return { id: data.id, status: data.status, amount: data.amount };
-}
-
-/** Check transfer status */
-export async function getTransferStatus(accountId: string, transferId: string): Promise<TransferResult> {
-  const data = await braleRequest("GET", `/accounts/${accountId}/transfers/${transferId}`);
-  return { id: data.id, status: data.status, amount: data.amount };
-}
-
-// ── Config check ─────────────────────────────────────────
-
-export function isBraleConfigured(): boolean {
-  return !!(BRALE_CLIENT_SECRET && BRALE_ACCOUNT_ID) || !!(PLAID_CLIENT_ID && PLAID_SECRET);
 }

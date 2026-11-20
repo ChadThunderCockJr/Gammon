@@ -1,46 +1,38 @@
 # TODOS
 
-Deferred items from /plan-eng-review on 2026-04-02.
+Deferred production-activation work after the audited verUSD cutover on 2026-11-17.
 
-## High Priority (do before real money)
+Free play is the only enabled mode until every high-priority item below has current,
+versioned evidence. Credentials alone do not enable money routes.
 
-### Multi-instance server clustering
-- **What:** Add Redis pub/sub for cross-instance WebSocket communication, move matchmaking queue to Redis
-- **Why:** Single instance is a single point of failure. One crash = all players disconnect. Fly.io auto-restart helps but there's still 5-10s of downtime.
-- **Depends on:** PostgreSQL migration (completed), Fly.io deployment
-- **Context:** Currently single-process, single-threaded Node.js. All game state in memory. PostgreSQL persistence handles data durability, but WebSocket connections can't survive a restart. The rejoin_game flow exists for client reconnection.
+## High Priority (required before real money)
 
-### Cloud KMS for admin mnemonic
-- **What:** Move from Fly.io secrets (env var) to AWS KMS or GCP KMS. Signing happens in the HSM, mnemonic never in server memory.
-- **Why:** The admin mnemonic can settle/cancel any game and move funds. Compromised server = compromised funds.
-- **Depends on:** Fly.io deployment
-- **Context:** Currently stored in process.env.ADMIN_MNEMONIC. Fly.io secrets encrypt at rest and inject at runtime, which is sufficient for launch but not for significant real money.
+### External program and legal approvals
+- **What:** Obtain written Brale, wagering, jurisdiction, identity/age, geolocation, responsible-play, disclosure, support, and data-lifecycle approvals for the exact production program.
+- **Why:** `FUNDS_MODE=verusd_production` intentionally fails closed when any approval ID, reviewed document, policy version, or expiry is missing or mismatched.
+- **Acceptance:** The approved environment/account/capability/transfer tuple and every policy artifact are current, byte-for-byte pinned, and independently reviewed.
 
-### useBalance client-side implementation
-- **What:** Replace the hardcoded "0.00" stub in useBalance.ts with actual custodial balance queries from the server API
-- **Why:** Users need to see their deposited balance. Currently the hook returns nothing useful.
-- **Depends on:** Custodial balance system (server-side)
-- **Context:** The hook exists but returns a hardcoded value. Need: GET /api/balance/:address endpoint on server, client hook that queries it, deposit/withdrawal UI.
+### Production asset and contract attestation
+- **What:** Deploy reviewed production escrow/configuration, record the chain genesis identity, denom metadata, code checksum, admin, rake recipient, caps, timeout, finality depth, and settlement-authority tuple.
+- **Why:** The runtime re-attests these identities before exposure and terminal chain transitions; an unreviewed tuple cannot safely move money.
+- **Acceptance:** Independent RPC and contract queries match every approved value, and a mismatch disables entry without blocking settlement, refund, history, or legally allowed cash-out.
 
-### Gammon-redemption.ts integration
-- **What:** Decide whether gammon-redemption.ts (307 lines, polls NFT contract, mints tokens) feeds into the custodial ledger or becomes dead code
-- **Why:** This subsystem has its own admin mnemonic and Redis tracking. If custodial balances replace on-chain tokens, this service needs updating or removal.
-- **Depends on:** Custodial balance system decision
-- **Context:** Located at apps/backgammon-server/src/gammon-redemption.ts. Uses its own SigningCosmWasmClient instance.
+### HSM-backed settlement authorizer
+- **What:** Operate the independent settlement authorizer with HSM/KMS-held keys, pinned URL/public key/signing-key ID, rotation procedures, and no mnemonic fallback.
+- **Why:** Application instances must never possess a key that can choose a winner, redirect an active pot, or bypass delayed contract administration.
+- **Acceptance:** Ambiguous broadcasts reconcile by query, key rotation is exercised, and application compromise alone cannot produce an accepted settlement.
 
-## Medium Priority (after launch)
+### Testnet and operational qualification
+- **What:** Exercise the complete Brale/Verona testnet path, process-kill boundaries, two-replica rolling restarts, DB/Redis/RPC/provider outages, missed webhooks, reversals, refunds, accessibility, and player-comprehension tasks.
+- **Why:** Code-only and deterministic-fixture evidence cannot certify external provider capabilities or production operations.
+- **Acceptance:** Every financial transition maps to its command key, balanced journal delta, provider/chain artifact, final state, recovery behavior, and independently reproduced conservation proof.
 
-### On-chain escrow v2 (trustless game resolution)
-- **What:** Move game resolution logic on-chain so the escrow contract doesn't depend on the server's admin mnemonic to call settle()
-- **Why:** Current architecture requires trusting the server. True trustlessness requires on-chain game state verification or an oracle pattern.
-- **Depends on:** Proven demand for wagering, legal review
-- **Context:** The wager-escrow and backgammon-game contracts already exist. The gap is that settlement is server-initiated. Need either on-chain move verification or a dispute resolution mechanism.
+## Medium Priority (after an approved single-game launch)
 
-### Tournament mode
-- **What:** Add bracket-style tournaments with buy-in and prize pools
-- **Why:** Tournaments create urgency (scheduled events), community, and are easier to market than 1v1 wagering
-- **Depends on:** Custodial balance system, stable multiplayer
-- **Context:** Considered as Approach C in the design doc. Not chosen for initial launch but worth revisiting once there's a player base.
+### Paid matches and tournaments
+- **What:** Design separate match-level and tournament escrow specifications before enabling any paid multi-game or bracket flow.
+- **Why:** The current paid contract and quote model intentionally supports single-game cash backgammon only.
+- **Acceptance:** The new design defines maximum exposure, elimination/refund rules, disconnects, terminal authority, conservation, and migration without weakening single-game recovery.
 
 ## Low Priority (future)
 
@@ -50,8 +42,3 @@ Deferred items from /plan-eng-review on 2026-04-02.
 - **Depends on:** Web app stability
 - **Context:** backgammon-ios is 9 files, essentially just a WebView component.
 
-### Redis migration completeness
-- **What:** Audit all 15+ Redis data structures in social-store.ts (768 lines) and determine which should move to PostgreSQL
-- **Why:** Running Redis AND PostgreSQL adds operational complexity. Long-term, consolidating to PostgreSQL for durable data and Redis for caching/pub-sub only is cleaner.
-- **Depends on:** PostgreSQL migration (initial)
-- **Context:** Currently Redis stores: profiles, friends, friend requests, match history, ratings, leaderboard, usernames, game history, dice proofs, online presence, challenges, gammon redemption tracking.

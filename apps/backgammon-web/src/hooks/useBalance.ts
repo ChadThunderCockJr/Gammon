@@ -1,92 +1,77 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { z } from "zod";
+import { authenticatedFetch } from "@/lib/server-session";
 import { useAuth } from "./useAuth";
-import { API_BASE } from "@/lib/api";
-import { USDC_DENOM } from "@/lib/config";
+import { useServerSession } from "./useServerSession";
 
-const XION_RPC = process.env.NEXT_PUBLIC_RPC || "https://rpc.xion-testnet-2.burnt.com:443";
-const GAMMON_DENOM = process.env.NEXT_PUBLIC_GAMMON_DENOM || USDC_DENOM;
+const WalletSchema = z.object({
+  balance: z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("fresh"),
+      availableMicroUsd: z.string().regex(/^\d+$/),
+      committedMicroUsd: z.string().regex(/^\d+$/),
+      pendingMicroUsd: z.string().regex(/^\d+$/),
+      observedAt: z.string().datetime(),
+    }),
+    z.object({ status: z.literal("unavailable"), reason: z.string() }),
+  ]),
+});
 
-/**
- * Hook to fetch and display the user's balance.
- *
- * Queries the on-chain balance directly via XION RPC (so Brale deposits
- * show up immediately). Falls back to the server custodial balance API.
- * Returns "0.00" for connected users with no balance (not null).
- * Returns null only when the user is not connected.
- */
-export function useBalance() {
+export type BalanceState =
+  | { readonly status: "disconnected" | "loading"; readonly available: null; readonly committed: null; readonly pending: null; readonly observedAt: null; readonly error: null }
+  | { readonly status: "fresh" | "stale"; readonly available: string; readonly committed: string; readonly pending: string; readonly observedAt: string; readonly error: null }
+  | { readonly status: "unavailable"; readonly available: null; readonly committed: null; readonly pending: null; readonly observedAt: null; readonly error: string };
+
+function formatMicroUsd(value: string): string {
+  const amount = BigInt(value);
+  const whole = amount / 1_000_000n;
+  const fraction = (amount % 1_000_000n).toString().padStart(6, "0").slice(0, 2);
+  return `$${whole}.${fraction}`;
+}
+
+export function useBalance(): BalanceState & { readonly balance: string | null; readonly isLoading: boolean; readonly refetch: () => Promise<void> } {
   const { address, isConnected } = useAuth();
-  const [balance, setBalance] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const lastAddress = useRef<string | null>(null);
-
-  const formatBalance = (rawAmount: string): string => {
-    const raw = BigInt(rawAmount || "0");
-    const divisor = BigInt(1000000);
-    const whole = raw / divisor;
-    const frac = raw % divisor;
-    return `${whole}.${frac.toString().padStart(6, "0").slice(0, 2)}`;
-  };
+  const secureSession = useServerSession();
+  const [state, setState] = useState<BalanceState>({ status: "disconnected", available: null, committed: null, pending: null, observedAt: null, error: null });
 
   const refetch = useCallback(async () => {
     if (!address || !isConnected) {
-      setBalance(null);
+      setState({ status: "disconnected", available: null, committed: null, pending: null, observedAt: null, error: null });
       return;
     }
-
-    setIsLoading(true);
-    setError(null);
-
+    if (secureSession.status !== "ready") {
+      setState({ status: "loading", available: null, committed: null, pending: null, observedAt: null, error: null });
+      return;
+    }
+    setState((current) => current.status === "fresh"
+      ? { ...current, status: "stale" }
+      : { status: "loading", available: null, committed: null, pending: null, observedAt: null, error: null });
     try {
-      // Primary: query on-chain balance via XION RPC (catches Brale deposits)
-      const rpcRes = await fetch(
-        `${XION_RPC}/cosmos/bank/v1beta1/balances/${address}/by_denom?denom=${encodeURIComponent(GAMMON_DENOM)}`,
-      );
-      if (rpcRes.ok) {
-        const data = await rpcRes.json();
-        const amount = data?.balance?.amount || "0";
-        setBalance(formatBalance(amount));
-        return;
-      }
+      const response = await authenticatedFetch("/api/funds/wallet");
+      if (!response.ok) throw new Error("Wallet balance is unavailable");
+      const wallet = WalletSchema.parse(await response.json());
+      if (wallet.balance.status === "unavailable") throw new Error("Wallet balance is unavailable");
+      setState({
+        status: "fresh",
+        available: formatMicroUsd(wallet.balance.availableMicroUsd),
+        committed: formatMicroUsd(wallet.balance.committedMicroUsd),
+        pending: formatMicroUsd(wallet.balance.pendingMicroUsd),
+        observedAt: wallet.balance.observedAt,
+        error: null,
+      });
     } catch {
-      // RPC failed, fall through to server API
+      setState({ status: "unavailable", available: null, committed: null, pending: null, observedAt: null, error: "Wallet balance is unavailable" });
     }
+  }, [address, isConnected, secureSession.status]);
 
-    try {
-      // Fallback: server custodial balance API
-      const res = await fetch(`${API_BASE}/api/balance/${address}`);
-      if (res.ok) {
-        const data = await res.json();
-        setBalance(formatBalance(data.balance || "0"));
-        return;
-      }
-    } catch {
-      // Both failed
-    }
-
-    setError("Could not fetch balance");
-    setBalance("0.00");
-    setIsLoading(false);
-  }, [address, isConnected]);
-
-  // Fetch when address changes
+  useEffect(() => { void refetch(); }, [refetch]);
   useEffect(() => {
-    if (address && isConnected && address !== lastAddress.current) {
-      lastAddress.current = address;
-      refetch();
-    } else if (!address || !isConnected) {
-      lastAddress.current = null;
-      setBalance(null);
-    }
-  }, [address, isConnected, refetch]);
+    if (!address || !isConnected || secureSession.status !== "ready") return;
+    const interval = window.setInterval(() => { void refetch(); }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [address, isConnected, refetch, secureSession.status]);
 
-  // Poll every 30s while connected
-  useEffect(() => {
-    if (!address || !isConnected) return;
-    const interval = setInterval(refetch, 30000);
-    return () => clearInterval(interval);
-  }, [address, isConnected, refetch]);
-
-  return { balance, isLoading, error, refetch };
+  return { ...state, balance: state.available, isLoading: state.status === "loading", refetch };
 }

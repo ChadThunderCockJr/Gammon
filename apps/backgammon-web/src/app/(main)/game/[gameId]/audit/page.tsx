@@ -2,56 +2,74 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { API_BASE } from "@/lib/api";
-import { deriveDice } from "@/lib/dice-verify";
+import { z } from "zod";
+import { verifyDiceRoll, type AuditDiceRoll } from "@/lib/dice-verify";
+import { authenticatedFetch } from "@/lib/server-session";
 
-interface DiceProof {
-  turnNumber: number;
-  player: string;
-  dice: [number, number];
-  drandRound: number | null;
-  drandRandomness: string | null;
-  drandSignature: string | null;
-}
+const GameHistorySchema = z.object({
+  gameId: z.string(),
+  white: z.string(),
+  black: z.string(),
+  whiteName: z.string().nullable(),
+  blackName: z.string().nullable(),
+  winner: z.enum(["white", "black"]).nullable(),
+  resultType: z.enum(["normal", "gammon", "backgammon"]).nullable(),
+  cubeValue: z.number().int().positive(),
+  turnCount: z.number().int().nonnegative(),
+  cashStakeMicroUsd: z.string().regex(/^\d+$/).nullable(),
+  cashState: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+type GameHistory = z.infer<typeof GameHistorySchema>;
+const ProofsSchema = z.object({ rolls: z.array(z.unknown()) });
 
-interface GameHistory {
-  gameId: string;
-  white: string;
-  black: string;
-  whiteName?: string;
-  blackName?: string;
-  winner: string;
-  resultType: string;
-  cubeValue: number;
-  turnCount: number;
-  wagerAmount: number;
-  createdAt: string;
+function dollars(microUsd: string): string {
+  const value = BigInt(microUsd);
+  return `${value / 1_000_000n}.${(value % 1_000_000n).toString().padStart(6, "0").slice(0, 2)}`;
 }
 
 type VerifyStatus = "pending" | "verified" | "failed" | "unverifiable";
 
 export default function GameAuditPage() {
   const { gameId } = useParams<{ gameId: string }>();
-  const [proofs, setProofs] = useState<DiceProof[]>([]);
+  const [proofs, setProofs] = useState<AuditDiceRoll[]>([]);
   const [history, setHistory] = useState<GameHistory | null>(null);
   const [verifyStatuses, setVerifyStatuses] = useState<Map<number, VerifyStatus>>(new Map());
-  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<"loading" | "ready" | "not_found" | "unavailable">("loading");
+  const [proofsUnavailable, setProofsUnavailable] = useState(false);
+  const [retryVersion, setRetryVersion] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
-  // Fetch game data
   useEffect(() => {
     if (!gameId) return;
-    setLoading(true);
-
-    Promise.all([
-      fetch(`${API_BASE}/api/game/${gameId}/dice-proofs`).then((r) => r.ok ? r.json() : null),
-      fetch(`${API_BASE}/api/game/${gameId}/history`).then((r) => r.ok ? r.json() : null),
-    ]).then(([proofsData, historyData]) => {
-      if (proofsData?.proofs) setProofs(proofsData.proofs);
-      if (historyData) setHistory(historyData);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [gameId]);
+    const controller = new AbortController();
+    setStatus("loading");
+    setProofsUnavailable(false);
+    void authenticatedFetch(`/api/game/${gameId}/history`, { signal: controller.signal })
+      .then(async (historyResponse) => {
+        if (historyResponse.status === 404) {
+          setStatus("not_found");
+          return;
+        }
+        if (!historyResponse.ok) throw new Error("AUDIT_HISTORY_UNAVAILABLE");
+        const nextHistory = GameHistorySchema.parse(await historyResponse.json());
+        setHistory(nextHistory);
+        const proofsResponse = await authenticatedFetch(`/api/game/${gameId}/dice-proofs`, { signal: controller.signal });
+        if (!proofsResponse.ok) {
+          setProofs([]);
+          setProofsUnavailable(true);
+        } else {
+          const parsed = ProofsSchema.parse(await proofsResponse.json());
+          setProofs(parsed.rolls as AuditDiceRoll[]);
+        }
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setStatus("unavailable");
+      });
+    return () => controller.abort();
+  }, [gameId, retryVersion]);
 
   // Progressive verification cascade
   useEffect(() => {
@@ -65,15 +83,15 @@ export default function GameAuditPage() {
       setTimeout(async () => {
         if (cancelled) return;
 
-        if (!proof.drandRound || !proof.drandRandomness) {
+        if ("proofStatus" in proof) {
           statuses.set(proof.turnNumber, "unverifiable");
         } else {
-          // Verify dice derivation client-side (async: uses crypto.subtle)
-          const white = history?.white || "";
-          const black = history?.black || "";
-          const verified = await deriveDice(proof.drandRandomness, white, black, proof.turnNumber);
-          const match = verified[0] === proof.dice[0] && verified[1] === proof.dice[1];
-          statuses.set(proof.turnNumber, match ? "verified" : "failed");
+          try {
+            const verification = await verifyDiceRoll(proof);
+            statuses.set(proof.turnNumber, verification.valid ? "verified" : "failed");
+          } catch {
+            statuses.set(proof.turnNumber, "unverifiable");
+          }
         }
 
         setVerifyStatuses(new Map(statuses));
@@ -81,36 +99,50 @@ export default function GameAuditPage() {
     });
 
     return () => { cancelled = true; };
-  }, [proofs, history]);
+  }, [proofs]);
 
   const verifiedCount = Array.from(verifyStatuses.values()).filter((s) => s === "verified").length;
   const totalRolls = proofs.length;
   const allVerified = verifiedCount === totalRolls && totalRolls > 0;
+  const failedCount = Array.from(verifyStatuses.values()).filter((value) => value === "failed").length;
+  const unverifiableCount = Array.from(verifyStatuses.values()).filter((value) => value === "unverifiable").length;
 
-  const copyAuditUrl = useCallback(() => {
-    navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyAuditUrl = useCallback(async () => {
+    setCopyError(false);
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      setCopyError(true);
+    }
   }, []);
 
-  if (loading) {
+  if (status === "loading") {
     return (
-      <div style={{ padding: "32px", fontFamily: "var(--font-body)", color: "var(--color-text-muted)" }}>
-        Loading audit data...
-      </div>
+      <main className="mx-auto max-w-5xl p-4 sm:p-6">
+        <h1 className="font-display text-2xl">Game fairness audit</h1>
+        <p role="status" className="mt-3 text-sm text-[var(--color-text-muted)]">Loading authoritative game and proof records…</p>
+      </main>
     );
   }
 
-  if (!history) {
+  if (status !== "ready" || !history) {
     return (
-      <div style={{ padding: "32px", fontFamily: "var(--font-body)", color: "var(--color-text-muted)" }}>
-        Game not found or audit data not available.
-      </div>
+      <main className="mx-auto max-w-xl p-4 sm:p-6">
+        <h1 className="font-display text-2xl">{status === "not_found" ? "Game audit not found" : "Game audit unavailable"}</h1>
+        <p role="alert" className="mt-3 text-sm text-[var(--color-text-muted)]">
+          {status === "not_found"
+            ? "This game does not exist or the signed-in wallet is not a participant. No result or proof data is inferred."
+            : "The audit service could not load the durable record. Try again; the game result has not been replaced with a placeholder."}
+        </p>
+        <button type="button" className="btn-secondary mt-4 min-h-11" onClick={() => setRetryVersion((value) => value + 1)}>Retry audit</button>
+      </main>
     );
   }
 
   return (
-    <div style={{ padding: "24px", maxWidth: 1200, margin: "0 auto" }}>
+    <main style={{ padding: "24px", maxWidth: 1200, margin: "0 auto" }}>
       {/* Page title */}
       <h1 style={{
         fontFamily: "var(--font-display)",
@@ -118,7 +150,7 @@ export default function GameAuditPage() {
         color: "var(--color-text-primary)",
         marginBottom: 8,
       }}>
-        Game Audit
+        Game fairness audit
       </h1>
 
       {/* Game summary bar */}
@@ -163,7 +195,13 @@ export default function GameAuditPage() {
             ? "var(--color-analysis-gold, #D0A848)"
             : "var(--color-text-muted)",
         }}>
-          {allVerified ? "✓" : "⋯"} {verifiedCount}/{totalRolls} rolls verified
+          {proofsUnavailable
+            ? "⚠ Proof records unavailable"
+            : totalRolls === 0
+              ? "— No proof records"
+              : allVerified
+                ? `✓ ${verifiedCount}/${totalRolls} rolls verified`
+                : `… ${verifiedCount}/${totalRolls} rolls verified`}
         </div>
 
         <div style={{
@@ -171,8 +209,10 @@ export default function GameAuditPage() {
           fontSize: "0.6875rem",
           color: "var(--color-text-muted)",
         }}>
-          {history.resultType} · Cube ×{history.cubeValue} · {history.turnCount} turns
-          {history.wagerAmount > 0 && ` · ${history.wagerAmount} USDC`}
+          {history.resultType ? `${history.resultType} · ` : ""}Cube ×{history.cubeValue} · {history.turnCount} turns
+          {history.winner ? ` · ${history.winner} won` : " · result pending"}
+          {history.cashStakeMicroUsd ? ` · $${dollars(history.cashStakeMicroUsd)} per point in verUSD · ${history.cashState ?? "status unavailable"}` : " · Free"}
+          {` · ${new Date(history.createdAt).toLocaleString()}`}
         </div>
       </div>
 
@@ -224,7 +264,11 @@ export default function GameAuditPage() {
                       {proof.dice[0]}-{proof.dice[1]}
                     </td>
                     <td style={{ padding: "8px 8px" }}>
-                      {proof.drandRound ? (
+                      {"proofStatus" in proof ? (
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.6875rem", color: "var(--color-warning)" }}>
+                          unavailable
+                        </span>
+                      ) : (
                         <a
                           href={`https://drand.love/rounds/${proof.drandRound}`}
                           target="_blank"
@@ -233,15 +277,11 @@ export default function GameAuditPage() {
                             fontFamily: "var(--font-mono)",
                             fontSize: "0.6875rem",
                             color: "var(--color-text-muted)",
-                            textDecoration: "none",
+                            textDecoration: "underline",
                           }}
                         >
                           #{proof.drandRound}
                         </a>
-                      ) : (
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.6875rem", color: "var(--color-text-faint)" }}>
-                          CSPRNG
-                        </span>
                       )}
                     </td>
                     <td style={{ padding: "8px 4px", textAlign: "center" }}>
@@ -255,7 +295,7 @@ export default function GameAuditPage() {
                         <span style={{ color: "var(--color-danger)", fontWeight: "bold" }}>✕</span>
                       )}
                       {status === "unverifiable" && (
-                        <span style={{ color: "var(--color-warning)", fontSize: "0.75rem" }} title="Roll used CSPRNG fallback (drand was unavailable)">⚠</span>
+                        <span role="img" aria-label="Unverifiable roll" style={{ color: "var(--color-warning)", fontSize: "0.75rem" }} title="No verifiable drand proof is available for this roll">⚠</span>
                       )}
                     </td>
                   </tr>
@@ -279,7 +319,6 @@ export default function GameAuditPage() {
           </p>
         </div>
 
-        {/* Right column: Analysis placeholder */}
         <div style={{
           background: "var(--color-bg-surface)",
           borderRadius: "var(--radius-card)",
@@ -294,21 +333,23 @@ export default function GameAuditPage() {
             color: "var(--color-text-muted)",
             marginBottom: 16,
           }}>
-            GNUBG Analysis
+            Verification result
           </h2>
-
-          <div style={{
-            background: "var(--color-bg-elevated)",
-            borderRadius: 6,
-            padding: "48px 24px",
-            textAlign: "center",
-            color: "var(--color-text-muted)",
-            fontSize: "0.8125rem",
-          }}>
-            <p>Analysis available after game replay.</p>
-            <p style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--color-text-faint)" }}>
-              Post-game GNUBG analysis shows equity graph, blunder detection, and move-by-move ratings.
-            </p>
+          <div className="space-y-3 text-sm text-[var(--color-text-secondary)]">
+            <p>Each verified row checks the drand BLS signature, derives randomness from that signature, and replays Gammon’s domain-separated rejection-sampling algorithm.</p>
+            {allVerified && <p role="status" className="rounded border border-[var(--color-success)] p-3">All recorded rolls independently verified.</p>}
+            {failedCount > 0 && <p role="alert" className="rounded border border-[var(--color-danger)] p-3">{failedCount} recorded roll{failedCount === 1 ? "" : "s"} failed verification. A cash game with failed proof must not settle normally.</p>}
+            {(unverifiableCount > 0 || proofsUnavailable || totalRolls === 0) && (
+              <p role="status" className="rounded border border-[var(--color-warning)] p-3">
+                {proofsUnavailable
+                  ? "Proof records could not be loaded."
+                  : totalRolls === 0
+                    ? "No durable dice proof records are available."
+                    : `${unverifiableCount} roll${unverifiableCount === 1 ? "" : "s"} cannot be independently verified.`}
+                {" "}Unverifiable is not the same as verified.
+              </p>
+            )}
+            <p>Financial settlement status is separate from proof status. Open Activity for the authoritative settlement, refund, or review receipt.</p>
           </div>
         </div>
       </div>
@@ -318,9 +359,11 @@ export default function GameAuditPage() {
         display: "flex",
         justifyContent: "center",
         gap: 12,
+        flexWrap: "wrap",
         marginTop: 24,
         padding: "16px 0",
       }}>
+        <p className="w-full text-center text-xs text-[var(--color-text-muted)]">Audit access is limited to the game’s signed-in participants.</p>
         <button
           onClick={copyAuditUrl}
           style={{
@@ -332,10 +375,12 @@ export default function GameAuditPage() {
             color: "var(--color-text-primary)",
             border: "1px solid var(--color-border-subtle)",
             cursor: "pointer",
+            minHeight: 44,
           }}
         >
-          {copied ? "Link copied!" : "Copy audit URL"}
+          {copied ? "Private audit URL copied" : "Copy private audit URL"}
         </button>
+        {copyError && <p role="alert" className="w-full text-center text-sm text-[var(--color-danger)]">The URL could not be copied. Copy it from the address bar.</p>}
       </div>
 
       {/* Responsive: stack on mobile */}
@@ -346,6 +391,6 @@ export default function GameAuditPage() {
           }
         }
       `}</style>
-    </div>
+    </main>
   );
 }

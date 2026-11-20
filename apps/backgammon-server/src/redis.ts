@@ -1,5 +1,7 @@
 import Redis from "ioredis";
 import { REDIS_MAX_RETRIES, REDIS_RETRY_DELAY_MIN_MS, REDIS_RETRY_DELAY_MAX_MS } from "./config.js";
+import { logger } from "./logger.js";
+
 
 let redis: Redis | null = null;
 
@@ -19,20 +21,22 @@ export function getRedis(): Redis | null {
     });
 
     redis.on("error", (err) => {
-      console.error("[Redis] Connection error:", err.message);
+      logger.error("Redis connection error", { errorCode: err.name });
     });
 
     redis.on("connect", () => {
-      console.log("[Redis] Connected");
+      logger.info("Redis connected");
     });
 
     redis.connect().catch(() => {
-      console.warn("[Redis] Initial connection failed — social features unavailable");
+      logger.warn("Redis initial connection failed; disposable features are unavailable");
     });
 
     return redis;
   } catch (err) {
-    console.error("[Redis] Failed to create client:", err);
+    logger.error("Failed to create Redis client", {
+      errorCode: err instanceof Error ? err.name : "unknown",
+    });
     return null;
   }
 }

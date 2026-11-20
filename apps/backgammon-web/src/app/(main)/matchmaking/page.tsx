@@ -77,38 +77,69 @@ function Timer({ seconds }: { seconds: number }) {
 export default function MatchmakingPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const matchLength = parseInt(searchParams.get("length") || "1", 10);
-  const isRated = searchParams.get("rated") !== "false";
+  const requestedLength = parseInt(searchParams.get("length") || "1", 10);
+  const matchLength = [1, 3, 5, 7].includes(requestedLength) ? requestedLength : 1;
   const [elapsed, setElapsed] = useState(0);
   const [countdown, setCountdown] = useState(3);
-  const [uiState, setUiState] = useState<"searching" | "found" | "countdown">("searching");
+  const [uiState, setUiState] = useState<"review" | "searching" | "queue-error" | "found" | "countdown">("review");
   const joinedRef = useRef(false);
 
-  const { address, isConnected } = useAuth();
+  const { address, isConnected, login, logout } = useAuth();
   const {
     connected,
     authenticated,
-    status,
     gameId,
     opponent,
     error,
+    sessionStatus,
+    retrySession,
+    retryConnection,
     joinQueue,
     leaveQueue,
     reset,
   } = useGame(WS_URL, address);
 
-  // Join queue once authenticated (not just connected — auth must complete first)
-  useEffect(() => {
-    if (authenticated && !joinedRef.current && (status === "idle" || status === "queued")) {
-      joinedRef.current = true;
-      joinQueue(0, matchLength);
-    }
-  }, [authenticated, status, joinQueue]);
+  const startSearch = () => {
+    if (!authenticated || joinedRef.current) return;
+    joinedRef.current = true;
+    setElapsed(0);
+    setCountdown(3);
+    setUiState("searching");
+    joinQueue(matchLength);
+  };
 
-  // Reset join flag on disconnect so we re-join on reconnect
+  const handleRetry = () => {
+    reset();
+    joinedRef.current = false;
+    startSearch();
+  };
+
+  // Reset join flag on disconnect so we re-join on reconnect.
   useEffect(() => {
     if (!connected) joinedRef.current = false;
   }, [connected]);
+
+  useEffect(() => {
+    if (uiState !== "searching" || !authenticated || joinedRef.current) return;
+    joinedRef.current = true;
+    joinQueue(matchLength);
+  }, [authenticated, joinQueue, matchLength, uiState]);
+
+  useEffect(() => {
+    if (uiState !== "searching" || !authenticated) return;
+    const heartbeat = window.setInterval(() => joinQueue(matchLength), 30_000);
+    return () => window.clearInterval(heartbeat);
+  }, [authenticated, joinQueue, matchLength, uiState]);
+
+  // A server can reject a queue request while the socket stays open. Stop all
+  // queue activity immediately instead of leaving the UI searching indefinitely.
+  useEffect(() => {
+    if (uiState !== "searching" || !error) return;
+    leaveQueue();
+    joinedRef.current = false;
+    setUiState("queue-error");
+  }, [error, leaveQueue, uiState]);
+
 
   // Track elapsed search time
   useEffect(() => {
@@ -118,12 +149,12 @@ export default function MatchmakingPage() {
     }
   }, [uiState]);
 
-  // When game starts (opponent matched), transition to "found" UI
+  // The durable queue allocates and routes the game before both sockets join it.
   useEffect(() => {
-    if (status === "playing" && gameId) {
+    if (uiState === "searching" && gameId) {
       setUiState("found");
     }
-  }, [status, gameId]);
+  }, [uiState, gameId]);
 
   // Auto-start countdown after "found" state shows briefly
   useEffect(() => {
@@ -157,55 +188,19 @@ export default function MatchmakingPage() {
     return addr.slice(0, 6) + "..." + addr.slice(-4);
   };
 
-  // Connection error state
-  if (error && !connected) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: "var(--color-bg-deepest)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "var(--font-body)",
-          color: "var(--color-text-primary)",
-          gap: 16,
-          padding: 24,
-        }}
-      >
-        <h2
-          style={{
-            fontSize: "1.375rem",
-            fontWeight: 700,
-            fontFamily: "var(--font-display)",
-            color: "var(--color-danger)",
-          }}
-        >
-          Connection Error
-        </h2>
-        <p style={{ fontSize: "0.875rem", color: "var(--color-text-secondary)", textAlign: "center" }}>
-          {error || "Unable to connect to game server. Please try again."}
-        </p>
-        <button
-          onClick={() => router.push("/")}
-          style={{
-            padding: "12px 32px",
-            borderRadius: 8,
-            border: "1.5px solid var(--color-border-default)",
-            background: "var(--color-bg-surface)",
-            color: "var(--color-text-secondary)",
-            fontSize: "0.875rem",
-            fontWeight: 600,
-            cursor: "pointer",
-            fontFamily: "var(--font-body)",
-          }}
-        >
-          Back to Lobby
-        </button>
-      </div>
-    );
-  }
+  const accessIssue = !isConnected
+    ? "wallet-disconnected"
+    : sessionStatus === "authorizing"
+      ? "authorizing"
+      : sessionStatus === "error"
+        ? "session-error"
+        : !connected
+          ? "deployment-unavailable"
+          : null;
+
+  const handleChangeWallet = () => {
+    void logout().finally(() => router.push("/login"));
+  };
 
   return (
     <div
@@ -281,8 +276,127 @@ export default function MatchmakingPage() {
           gap: 32,
         }}
       >
+        {accessIssue && (
+          <section
+            aria-live="polite"
+            style={{
+              width: "min(100%, 420px)",
+              display: "grid",
+              gap: 16,
+              padding: 24,
+              background: "var(--color-bg-surface)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: 10,
+            }}
+          >
+            {accessIssue === "wallet-disconnected" && (
+              <>
+                <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>Wallet disconnected</h1>
+                <p style={{ margin: 0, color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>Connect a wallet before finding a rated opponent.</p>
+                <button type="button" onClick={login} className="btn-primary min-h-11">Connect wallet</button>
+              </>
+            )}
+            {accessIssue === "authorizing" && (
+              <>
+                <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>Authorizing secure session</h1>
+                <p role="status" style={{ margin: 0, color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>Verifying this wallet before it can join the rated queue.</p>
+              </>
+            )}
+            {accessIssue === "session-error" && (
+              <>
+                <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>Session authorization failed</h1>
+                <p role="alert" style={{ margin: 0, color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>Your wallet could not be authorized for matchmaking. No queue request was sent.</p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button type="button" onClick={retrySession} className="btn-primary min-h-11">Retry authorization</button>
+                  <button type="button" onClick={handleChangeWallet} className="btn-secondary min-h-11">Change wallet</button>
+                </div>
+              </>
+            )}
+            {accessIssue === "deployment-unavailable" && (
+              <>
+                <h1 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>Matchmaking unavailable</h1>
+                <p role="alert" style={{ margin: 0, color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>The matchmaking service is unavailable right now. No queue request was sent.</p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button type="button" onClick={retryConnection} className="btn-primary min-h-11">Retry connection</button>
+                  <button type="button" onClick={handleCancel} className="btn-secondary min-h-11">Back to lobby</button>
+                </div>
+              </>
+            )}
+          </section>
+        )}
+        {!accessIssue && uiState === "queue-error" && (
+          <section
+            aria-labelledby="queue-error-title"
+            style={{
+              width: "min(100%, 420px)",
+              display: "grid",
+              gap: 16,
+              padding: 24,
+              background: "var(--color-bg-surface)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: 10,
+            }}
+          >
+            <h1 id="queue-error-title" style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>Queue unavailable</h1>
+            <p role="alert" style={{ margin: 0, color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>
+              {error || "The queue could not accept your request."} Searching has stopped and no match was started.
+            </p>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" onClick={handleRetry} className="btn-primary min-h-11">Retry</button>
+              <button type="button" onClick={handleCancel} className="btn-secondary min-h-11">Back to lobby</button>
+            </div>
+          </section>
+        )}
+        {!accessIssue && uiState === "review" && (
+          <section
+            aria-labelledby="queue-review-title"
+            style={{
+              width: "min(100%, 420px)",
+              display: "grid",
+              gap: 20,
+              padding: 24,
+              background: "var(--color-bg-surface)",
+              border: "1px solid var(--color-border-subtle)",
+              borderRadius: 10,
+            }}
+          >
+            <div>
+              <h1 id="queue-review-title" style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: "1.5rem" }}>
+                Join a free match queue
+              </h1>
+              <p style={{ margin: "8px 0 0", color: "var(--color-text-secondary)", fontSize: "0.875rem" }}>
+                Review the match settings before searching. Joining this queue never reserves or moves money.
+              </p>
+            </div>
+            <dl style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, margin: 0 }}>
+              <div><dt style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>Length</dt><dd style={{ margin: 0, fontWeight: 600 }}>{matchLength} point{matchLength === 1 ? "" : "s"}</dd></div>
+              <div><dt style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>Wager</dt><dd style={{ margin: 0, fontWeight: 600 }}>Free</dd></div>
+              <div><dt style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>Mode</dt><dd style={{ margin: 0, fontWeight: 600 }}>Rated</dd></div>
+              <div><dt style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>Opponent</dt><dd style={{ margin: 0, fontWeight: 600 }}>Any available player</dd></div>
+            </dl>
+            {!isConnected || !authenticated ? (
+              <p role="status" style={{ margin: 0, color: "var(--color-warning)", fontSize: "0.875rem" }}>
+                Complete wallet login and secure session setup before joining.
+              </p>
+            ) : null}
+            <div style={{ display: "grid", gap: 10 }}>
+              <button
+                type="button"
+                onClick={startSearch}
+                disabled={!isConnected || !authenticated}
+                style={{ minHeight: 44, border: 0, borderRadius: 8, background: "var(--color-gold-primary)", color: "var(--color-accent-fg)", fontWeight: 700, cursor: isConnected && authenticated ? "pointer" : "not-allowed" }}
+              >
+                Find an opponent
+              </button>
+              <Link href="/create-match" style={{ minHeight: 44, display: "grid", placeItems: "center", color: "var(--color-text-secondary)" }}>
+                Create a private invite
+              </Link>
+            </div>
+          </section>
+        )}
+
         {/* ═══ SEARCHING STATE ════════════════════════════ */}
-        {uiState === "searching" && (
+        {!accessIssue && uiState === "searching" && (
           <>
             {/* Searching animation area */}
             <div
@@ -358,7 +472,7 @@ export default function MatchmakingPage() {
               {[
                 { label: "Length", value: `${matchLength}pt` },
                 { label: "Wager", value: "Free" },
-                { label: "Mode", value: isRated ? "Rated" : "Casual" },
+                { label: "Mode", value: "Rated" },
               ].map((item, i) => (
                 <div key={i} style={{ textAlign: "center", minWidth: 60 }}>
                   <div
@@ -423,7 +537,7 @@ export default function MatchmakingPage() {
         )}
 
         {/* ═══ OPPONENT FOUND STATE ═══════════════════════ */}
-        {uiState === "found" && (
+        {!accessIssue && uiState === "found" && (
           <>
             <div
               className="gap-6 sm:gap-10"
@@ -526,7 +640,7 @@ export default function MatchmakingPage() {
         )}
 
         {/* ═══ COUNTDOWN STATE ════════════════════════════ */}
-        {uiState === "countdown" && (
+        {!accessIssue && uiState === "countdown" && (
           <>
             <div
               style={{

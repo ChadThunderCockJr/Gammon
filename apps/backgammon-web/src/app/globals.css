@@ -11,39 +11,39 @@
   /* ─── Text hierarchy ─── */
   --color-text-primary: #ECE8E0;
   --color-text-secondary: #B0AAA0;
-  --color-text-muted: #787268;
-  --color-text-faint: #5A5850;
+  --color-text-muted: #9A948A;
+  --color-text-faint: #8A857C;
 
   /* ─── Accent — dark burgundy ─── */
-  --color-gold-primary: #581428;
-  --color-gold-light: #6B2D3E;
-  --color-gold-dark: #3A0C1A;
-  --color-gold-muted: #220C18;
-  --color-accent-fg: #ECE8E0;
-  --color-text-on-gold: #ECE8E0;
+  --color-gold-primary: #D15B7D;
+  --color-gold-light: #DF7191;
+  --color-gold-dark: #C64E70;
+  --color-gold-muted: rgba(209, 91, 125, 0.18);
+  --color-accent-fg: #0A0E08;
+  --color-text-on-gold: #0A0E08;
 
   /* ─── Semantic ─── */
   --color-success: #60A860;
   --color-success-muted: rgba(96, 168, 96, 0.12);
-  --color-danger: #CC4444;
-  --color-danger-muted: rgba(204, 68, 68, 0.12);
+  --color-danger: #F07070;
+  --color-danger-muted: rgba(240, 112, 112, 0.16);
   --color-warning: #FBBF24;
-  --color-info: #5888A0;
+  --color-info: #70A9C4;
 
   /* ─── Burgundy ─── */
-  --color-burgundy-primary: #882040;
-  --color-burgundy-light: #A83858;
-  --color-burgundy-deep: #581428;
-  --color-burgundy-faint: #220C18;
-  --color-burgundy-accent: #6B2D3E;
+  --color-burgundy-primary: #D15B7D;
+  --color-burgundy-light: #DF7191;
+  --color-burgundy-deep: #C64E70;
+  --color-burgundy-faint: rgba(209, 91, 125, 0.14);
+  --color-burgundy-accent: #D15B7D;
 
   /* ─── Overlay ─── */
   --color-overlay: rgba(0, 0, 0, 0.6);
 
   /* ─── Borders ─── */
-  --color-border-subtle: #2A3026;
-  --color-border-default: #2A3026;
-  --color-border-strong: #3A4036;
+  --color-border-subtle: #626A5C;
+  --color-border-default: #70786A;
+  --color-border-strong: #858E80;
 
   /* ─── Analysis gold accent (post-game analysis page) ─── */
   --color-analysis-gold: #D0A848;
@@ -108,8 +108,8 @@ html.light {
   /* ─── Text hierarchy (WCAG AA compliant against #F5F1EB) ─── */
   --color-text-primary: #1A1814;
   --color-text-secondary: #4A4640;
-  --color-text-muted: #6B6560;
-  --color-text-faint: #7D776C;
+  --color-text-muted: #5F5952;
+  --color-text-faint: #676159;
 
   /* ─── Accent — burgundy on light ─── */
   --color-gold-primary: #7A1830;
@@ -138,9 +138,9 @@ html.light {
   --color-overlay: rgba(0, 0, 0, 0.45);
 
   /* ─── Borders (darkened for visibility against light backgrounds) ─── */
-  --color-border-subtle: #C4BCB0;
-  --color-border-default: #8E8678;
-  --color-border-strong: #766E62;
+  --color-border-subtle: #8E8678;
+  --color-border-default: #766E62;
+  --color-border-strong: #5F584E;
 
   /* ─── Analysis gold accent (darkened for light backgrounds, WCAG AA) ─── */
   --color-analysis-gold: #806410;
@@ -191,7 +191,7 @@ html.lux {
   --color-text-primary: #E8B84A;
   --color-text-secondary: #D4A843;
   --color-text-muted: #B8922E;
-  --color-text-faint: #A08850;
+  --color-text-faint: #A58E58;
 
   /* ─── Accent — gold buttons on burgundy backgrounds ─── */
   --color-gold-primary: #C5973E;
@@ -202,12 +202,12 @@ html.lux {
   --color-text-on-gold: #2A0A16;
 
   /* ─── Semantic ─── */
-  --color-success: #60A860;
-  --color-success-muted: rgba(96, 168, 96, 0.15);
-  --color-danger: #CC4444;
-  --color-danger-muted: rgba(204, 68, 68, 0.15);
+  --color-success: #78C478;
+  --color-success-muted: rgba(120, 196, 120, 0.18);
+  --color-danger: #F07070;
+  --color-danger-muted: rgba(240, 112, 112, 0.18);
   --color-warning: #FBBF24;
-  --color-info: #5888A0;
+  --color-info: #70A9C4;
 
   /* ─── Burgundy — lighter for visibility on burgundy bg ─── */
   --color-burgundy-primary: #C5973E;
@@ -220,9 +220,9 @@ html.lux {
   --color-overlay: rgba(0, 0, 0, 0.6);
 
   /* ─── Borders ─── */
-  --color-border-subtle: #6B2D3E;
-  --color-border-default: #7A1830;
-  --color-border-strong: #882040;
+  --color-border-subtle: #9B7245;
+  --color-border-default: #B08A54;
+  --color-border-strong: #C39A62;
 
   /* ─── Font — Cormorant for headings (Pinyon Script reserved for .font-brand) ─── */
   --font-display: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
@@ -269,10 +269,12 @@ html.light ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.2);
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 body {
@@ -505,6 +507,106 @@ html.lux .font-brand {
 .animate-slide-in-right {
   animation: slide-in-right 200ms ease-out;
 }
+.game-controls-mobile {
+  display: none;
+}
+
+@media (max-width: 1023px), (max-height: 720px) {
+  .game-controls-in-board {
+    display: none;
+  }
+
+  .game-controls-mobile {
+    display: flex;
+    width: min(100%, 960px);
+    min-width: 0;
+    min-height: 52px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px max(4px, env(safe-area-inset-bottom));
+    border-block: 1px solid var(--color-border-subtle);
+    background: var(--color-bg-surface);
+    box-sizing: border-box;
+  }
+
+  .game-controls-mobile > .center-controls,
+  .game-controls-mobile > .center-controls-double-offer,
+  .game-controls-mobile > .center-controls-notice {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .game-controls-mobile .center-controls-primary {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+    gap: 4px !important;
+  }
+
+  .game-controls-mobile .center-controls-dice {
+    min-width: 56px;
+    min-height: 56px;
+    flex: 0 0 auto;
+    gap: 4px !important;
+  }
+
+  .game-controls-mobile .center-controls-roll-actions,
+  .game-controls-mobile .center-controls-turn-actions,
+  .game-controls-mobile .center-controls-double-decision {
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .game-controls-mobile .center-controls-roll-actions,
+  .game-controls-mobile .center-controls-turn-actions {
+    flex: 0 1 auto;
+  }
+
+  .game-controls-mobile .center-controls-roll-actions button,
+  .game-controls-mobile .center-controls-turn-actions button,
+  .game-controls-mobile .center-controls-double-decision button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .game-controls-mobile .center-controls-double-offer {
+    padding-inline: 4px;
+  }
+
+  .game-controls-mobile .center-controls-double-offer p,
+  .game-controls-mobile .center-controls-notice {
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: portrait) {
+  .game-screen-main {
+    align-items: stretch;
+    overflow-y: auto;
+  }
+
+  .game-board-shell {
+    flex: 0 0 auto;
+    height: min(52dvh, 70vw);
+    min-height: 216px;
+  }
+
+  .game-board-root {
+    align-items: flex-start;
+    overflow: hidden;
+  }
+
+  .game-controls-mobile {
+    margin-top: 0;
+    min-height: 56px;
+  }
+}
+
 
 /* ─── Reduced motion support ─── */
 @media (prefers-reduced-motion: reduce) {

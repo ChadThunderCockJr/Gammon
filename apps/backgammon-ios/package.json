@@ -9,6 +9,7 @@
     "lint": "expo lint"
   },
   "dependencies": {
+    "@xion-beginner/backgammon-core": "workspace:*",
     "@react-navigation/native": "^7.1.6",
     "expo": "~53.0.24",
     "expo-constants": "~17.1.6",
