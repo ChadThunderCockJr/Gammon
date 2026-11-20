@@ -1,0 +1,35 @@
+name: Deploy Gammon backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gammon-server-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: Production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Fly CLI
+        run: |
+          curl -fsSL https://fly.io/install.sh | sh
+          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
+      - name: Deploy backend with entry disabled
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          test -n "$FLY_API_TOKEN" || { echo 'Production environment requires an app-scoped Fly deploy token.' >&2; exit 1; }
+          flyctl deploy --remote-only --config apps/backgammon-server/fly.toml --dockerfile Dockerfile --env FUNDS_MODE=free
+      - name: Verify deployed readiness and funds mode
+        run: |
+          base=https://gammon-server.fly.dev
+          curl -fsS --retry 6 --retry-all-errors --max-time 10 "$base/ready" | jq -e '.status == "ready" and .database.migrated == true and .funds.mode == "free"'
+          curl -fsS --max-time 10 "$base/api/funds/config" | jq -e '.mode == "free" and .entryEnabled == false'
