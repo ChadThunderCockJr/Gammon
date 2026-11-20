@@ -1,23 +1,11 @@
-"use client";
-
-import { AbstraxionProvider } from "@burnt-labs/abstraxion";
+import type { Metadata, Viewport } from "next";
+import { connection } from "next/server";
+import { headers } from "next/headers";
 import { Cinzel, Cormorant_Garamond, Josefin_Sans, JetBrains_Mono, Pinyon_Script } from "next/font/google";
-import { ThemeProvider } from "@/contexts/ThemeContext";
-import { CHAIN_ID, USDC_DENOM, ESCROW_GRANT_AMOUNT, SITE_URL } from "@/lib/config";
-import { ABSTRAXION_CLEANUP_KEY, ABSTRAXION_CLEANUP_VERSION, ABSTRAXION_STALE_KEYS } from "@/lib/constants";
+import { SITE_URL } from "@/lib/config";
+import { RootClientProviders } from "./RootClientProviders";
+import { routeTitle } from "@/lib/route-metadata";
 import "./globals.css";
-
-// One-time cleanup of stale Abstraxion state from failed auth attempts
-if (typeof window !== "undefined" && window.localStorage.getItem(ABSTRAXION_CLEANUP_KEY) !== ABSTRAXION_CLEANUP_VERSION) {
-  ABSTRAXION_STALE_KEYS.forEach((k) =>
-    window.localStorage.removeItem(k),
-  );
-  // Remove any keypair data
-  Object.keys(window.localStorage)
-    .filter((k) => k.startsWith("xion-") || k.startsWith("abstraxion"))
-    .forEach((k) => window.localStorage.removeItem(k));
-  window.localStorage.setItem(ABSTRAXION_CLEANUP_KEY, ABSTRAXION_CLEANUP_VERSION);
-}
 
 const cinzel = Cinzel({
   subsets: ["latin"],
@@ -25,28 +13,24 @@ const cinzel = Cinzel({
   variable: "--font-cinzel",
   display: "swap",
 });
-
 const cormorant = Cormorant_Garamond({
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700"],
   variable: "--font-cormorant",
   display: "swap",
 });
-
 const josefinSans = Josefin_Sans({
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700"],
   variable: "--font-josefin",
   display: "swap",
 });
-
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-jetbrains",
   display: "swap",
 });
-
 const pinyonScript = Pinyon_Script({
   subsets: ["latin"],
   weight: "400",
@@ -54,71 +38,51 @@ const pinyonScript = Pinyon_Script({
   display: "swap",
 });
 
-const ESCROW_CONTRACT = process.env.NEXT_PUBLIC_ESCROW_CONTRACT || "";
-const TREASURY_ADDRESS = process.env.NEXT_PUBLIC_TREASURY_ADDRESS || "";
+const description = "Play backgammon online, practice against the computer, and review every match.";
 
-const abstraxionConfig = {
-  chainId: CHAIN_ID,
-  treasury: TREASURY_ADDRESS || "xion1dlm2vellmpau54yd7vywvesvvhu6wnx4vtfzkk8jkzd6yrfvc0hq6l8lu7",
-  // Explicit empty bank prevents SDK fallback bank config with broken "0.1" amount
-  bank: [] as { denom: string; amount: string }[],
-  ...(ESCROW_CONTRACT
-    ? {
-        contracts: [
-          {
-            address: ESCROW_CONTRACT,
-            amounts: [{ denom: USDC_DENOM, amount: ESCROW_GRANT_AMOUNT }],
-          },
-        ],
-      }
-    : {}),
-  authentication: {
-    type: 'redirect' as const,
-    callbackUrl: typeof window !== 'undefined' ? window.location.origin : undefined,
-  },
+export async function generateMetadata(): Promise<Metadata> {
+  const pathname = (await headers()).get("x-gammon-pathname");
+  const title = pathname ? routeTitle(pathname) : "Gammon";
+  return {
+    metadataBase: new URL(SITE_URL),
+    title,
+    description,
+    manifest: "/manifest.json",
+    appleWebApp: { capable: true, statusBarStyle: "black-translucent" },
+    openGraph: {
+      title,
+      description,
+      type: "website",
+      url: SITE_URL,
+      images: [{ url: "/logo.png", width: 512, height: 512, alt: "Gammon backgammon board" }],
+    },
+    twitter: { card: "summary", images: ["/logo.png"] },
+  };
+}
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#F5F1EB",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  await connection();
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <title>Gammon</title>
-        <meta name="description" content="The world's fairest backgammon platform. Provably fair dice on the blockchain." />
-        <meta name="theme-color" content="#F5F1EB" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        <link rel="manifest" href="/manifest.json" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta property="og:title" content="Gammon" />
-        <meta property="og:description" content="The world's fairest backgammon platform. Provably fair dice on the blockchain." />
-        <meta property="og:type" content="website" />
-        <meta property="og:url" content={SITE_URL} />
-        <meta property="og:image" content={`${SITE_URL}/logo.png`} />
-        <meta property="og:image:width" content="512" />
-        <meta property="og:image:height" content="512" />
-        <meta property="og:image:alt" content="Gammon — The world's fairest backgammon platform" />
-        <meta name="twitter:card" content="summary" />
-        <meta name="twitter:image" content={`${SITE_URL}/logo.png`} />
-        {/* GNUBG WASM is lazy-loaded on game pages only (via gnubg.ts ensureWorker) */}
-        {/* Inline script to set theme class before first paint — prevents flash */}
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem("gammon-theme");document.documentElement.className=t==="lux"?"lux":t==="dark"?"dark":"light"}catch(e){}})()`,
           }}
         />
       </head>
-      <body
-        className={`${cinzel.variable} ${cormorant.variable} ${josefinSans.variable} ${jetbrainsMono.variable} ${pinyonScript.variable} antialiased`}
-      >
-        <ThemeProvider>
-          <AbstraxionProvider config={abstraxionConfig}>
-            {children}
-          </AbstraxionProvider>
-        </ThemeProvider>
+      <body className={`${cinzel.variable} ${cormorant.variable} ${josefinSans.variable} ${jetbrainsMono.variable} ${pinyonScript.variable} antialiased`}>
+        <RootClientProviders>{children}</RootClientProviders>
       </body>
     </html>
   );

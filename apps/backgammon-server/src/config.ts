@@ -1,7 +1,3 @@
-// Chain
-export const CHAIN_ADDRESS_PREFIX = process.env.ADDRESS_PREFIX || "xion";
-export const GAS_PRICE = process.env.GAS_PRICE || "0.025uxion";
-export const DEFAULT_DENOM = process.env.GAMMON_DENOM || "ibc/6490A7EAB61059BFC1CDDEB05917DD70BDF3A611654162A1A47DB930D40D8AF4";
 
 // Rate limiting
 export const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "1000", 10);
@@ -12,9 +8,7 @@ export const WS_MAX_PAYLOAD_BYTES = parseInt(process.env.WS_MAX_PAYLOAD_BYTES ||
 
 // Timeouts
 export const DISCONNECT_GRACE_SEC = parseInt(process.env.DISCONNECT_GRACE_SEC || "30", 10);
-export const DISCONNECT_GRACE_DOUBLE_SEC = parseInt(process.env.DISCONNECT_GRACE_DOUBLE_SEC || "120", 10);
 export const DISCONNECT_CHECK_INTERVAL_MS = parseInt(process.env.DISCONNECT_CHECK_INTERVAL_MS || "5000", 10);
-export const DOUBLE_DEPOSIT_TIMEOUT_MS = parseInt(process.env.DOUBLE_DEPOSIT_TIMEOUT_MS || "120000", 10);
 export const DEFAULT_TURN_TIME_LIMIT_SEC = parseInt(process.env.DEFAULT_TURN_TIME_LIMIT_SEC || "60", 10);
 export const INTER_GAME_DELAY_MS = parseInt(process.env.INTER_GAME_DELAY_MS || "3000", 10);
 

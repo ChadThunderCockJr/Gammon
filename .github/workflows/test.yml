@@ -27,8 +27,28 @@ jobs:
       - name: Typecheck server
         run: pnpm --filter @xion-beginner/backgammon-server typecheck
 
+
+      - name: Typecheck web
+        run: pnpm --filter @xion-beginner/backgammon-web typecheck
       - name: Test backgammon-core
         run: pnpm --filter @xion-beginner/backgammon-core test
 
+      - name: Test backgammon web
+        run: pnpm --filter @xion-beginner/backgammon-web test
+
       - name: Test backgammon-server
         run: pnpm --filter @xion-beginner/backgammon-server test
+
+  contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Test wager escrow contract
+        run: cargo test --locked --manifest-path contracts/wager-escrow/Cargo.toml
+
+      - name: Test cash-out authorization contract
+        run: cargo test --locked --manifest-path contracts/cash-out-router/Cargo.toml

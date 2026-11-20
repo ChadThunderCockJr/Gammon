@@ -1,4 +1,4 @@
-use cosmwasm_std::StdError;
+use cosmwasm_std::{OverflowError, StdError, Uint128};
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
@@ -6,55 +6,70 @@ pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
 
-    #[error("Unauthorized")]
-    Unauthorized {},
+    #[error("{0}")]
+    Overflow(#[from] OverflowError),
 
-    #[error("Escrow already exists for game {game_id}")]
-    EscrowAlreadyExists { game_id: String },
+    #[error("unauthorized")]
+    Unauthorized,
 
-    #[error("Escrow not found for game {game_id}")]
-    EscrowNotFound { game_id: String },
+    #[error("new wagers are paused")]
+    Paused,
 
-    #[error("Invalid wager: {amount} not in range [{min}, {max}]")]
-    InvalidWager { amount: u128, min: u128, max: u128 },
+    #[error("invalid configuration: {reason}")]
+    InvalidConfig { reason: String },
 
-    #[error("Invalid payment: expected {expected} {denom}, received {received}")]
-    InvalidPayment {
-        expected: u128,
-        received: u128,
-        denom: String,
+    #[error("invalid identifier")]
+    InvalidIdentifier,
+
+    #[error("game already exists")]
+    GameAlreadyExists,
+
+    #[error("game not found")]
+    GameNotFound,
+
+    #[error("players must be distinct")]
+    SamePlayer,
+
+    #[error("stake {amount} is outside [{minimum}, {maximum}]")]
+    InvalidStake {
+        amount: Uint128,
+        minimum: Uint128,
+        maximum: Uint128,
     },
 
-    #[error("No payment received")]
-    NoPayment {},
+    #[error("unexpected funds")]
+    UnexpectedFunds,
 
-    #[error("Player already deposited")]
-    AlreadyDeposited {},
+    #[error("invalid reserve payment: expected {expected} {denom}")]
+    InvalidReserve { expected: Uint128, denom: String },
 
-    #[error("Player is not part of this game")]
-    NotAPlayer {},
+    #[error("sender is not a player")]
+    NotAPlayer,
 
-    #[error("Invalid escrow status: expected {expected}, got {got}")]
-    InvalidEscrowStatus { expected: String, got: String },
+    #[error("reserve already deposited")]
+    AlreadyDeposited,
 
-    #[error("Timeout not reached: {remaining} seconds remaining")]
-    TimeoutNotReached { remaining: u64 },
+    #[error("invalid game state")]
+    InvalidState,
 
-    #[error("Winner must be one of the players")]
-    InvalidWinner {},
+    #[error("funding deadline has not passed")]
+    FundingDeadlineNotReached,
 
-    #[error("Insufficient contract balance: need {needed}, have {available}")]
-    InsufficientBalance { needed: u128, available: u128 },
+    #[error("both reserves are already funded")]
+    AlreadyFunded,
 
-    #[error("No pending double offer")]
-    NoPendingDouble {},
+    #[error("winner must be a player")]
+    InvalidWinner,
 
-    #[error("Player has already deposited for this double")]
-    AlreadyDepositedDouble {},
+    #[error("invalid result multiplier")]
+    InvalidMultiplier,
 
-    #[error("Invalid cube value: {value}")]
-    InvalidCubeValue { value: u32 },
+    #[error("invalid cube value")]
+    InvalidCubeValue,
 
-    #[error("Cube value {value} exceeds maximum of {max}")]
-    CubeValueExceedsMax { value: u32, max: u32 },
+    #[error("terminal command conflicts with the existing receipt")]
+    TerminalConflict,
+
+    #[error("refund reason is invalid")]
+    InvalidRefundReason,
 }

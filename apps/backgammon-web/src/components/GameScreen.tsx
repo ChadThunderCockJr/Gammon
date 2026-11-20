@@ -13,6 +13,35 @@ import type { CandidateMove } from "@/lib/analysis";
 import { isSoundMuted, setSoundMuted } from "@/lib/sounds";
 import { TURN_TIMER_TICK_MS } from "@/lib/constants";
 
+export interface CashGameTerms {
+  quoteId: string;
+  stakeMicroUsd: string;
+  reservePerPlayerMicroUsd: string;
+  rakeBps: number;
+  cubeCap: number;
+  state: string;
+  testFunds: boolean;
+  custodyRecipient: string | null;
+  cashSessionStartedAt: string | null;
+  realityCheckDueAt: string | null;
+}
+
+function formatMicroUsd(value: bigint): string {
+  const whole = value / 1_000_000n;
+  const fraction = (value % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return `$${whole.toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+}
+
+function cashLiability(terms: CashGameTerms, cube: number, multiplier = 1): bigint {
+  const calculated = BigInt(terms.stakeMicroUsd) * BigInt(cube) * BigInt(multiplier);
+  const reserve = BigInt(terms.reservePerPlayerMicroUsd);
+  return calculated > reserve ? reserve : calculated;
+}
+
+function cashDecisionSummary(terms: CashGameTerms, cube: number): string {
+  return `${formatMicroUsd(cashLiability(terms, cube))} gross at a normal result; ${formatMicroUsd(BigInt(terms.reservePerPlayerMicroUsd))} maximum reserved loss.`;
+}
+
 interface GameScreenProps {
   gameState: GameState;
   myColor: Player;
@@ -35,6 +64,7 @@ interface GameScreenProps {
   cubeOwner?: Player | null;
   doubleOffered?: boolean;
   doubleOfferedBy?: Player | null;
+  doubleOfferDeadlineAt?: string | null;
   canDouble?: boolean;
   onDouble?: () => void;
   onAcceptDouble?: () => void;
@@ -47,11 +77,17 @@ interface GameScreenProps {
   lastReaction?: { emoji: string; from: string } | null;
   onBlockPlayer?: (address: string) => void;
   onReportPlayer?: (address: string, reason: string) => void;
+  blockAction?: { status: "idle" | "pending" | "success" | "error"; error?: string };
+  reportAction?: { status: "idle" | "pending" | "success" | "error"; error?: string; receiptId?: string };
   opponentAddress?: string | null;
   matchState?: MatchState | null;
   matchOver?: boolean;
   matchTurnHistory?: TurnRecord[][];
   turnTimeLimit?: number;
+  cashTerms?: CashGameTerms | null;
+  cashTermsRequired?: boolean;
+  cashTermsVerified?: boolean;
+  onAcknowledgeRealityCheck?: () => Promise<void>;
   // Consultation mode (AI games)
   isAIGame?: boolean;
   consultationEnabled?: boolean;
@@ -91,6 +127,23 @@ function formatTime(seconds: number): string {
   const s = seconds % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
+function useDeadlineSeconds(deadlineAt: string | null | undefined): number | null {
+  const calculate = useCallback(() => {
+    if (!deadlineAt) return null;
+    const deadline = Date.parse(deadlineAt);
+    if (!Number.isFinite(deadline)) return null;
+    return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  }, [deadlineAt]);
+  const [seconds, setSeconds] = useState<number | null>(calculate);
+  useEffect(() => {
+    setSeconds(calculate());
+    if (!deadlineAt) return;
+    const timer = window.setInterval(() => setSeconds(calculate()), 250);
+    return () => window.clearInterval(timer);
+  }, [calculate, deadlineAt]);
+  return seconds;
+}
+
 
 // ─── PlayerBar (redesigned) ────────────────────────────────────
 
@@ -194,6 +247,45 @@ function PlayerBar({
   );
 }
 
+function formatCashTime(value: string | null): string {
+  if (!value) return "Not yet recorded";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Not yet recorded" : date.toLocaleString();
+}
+function cashStateLabel(state: string): string {
+  return ({
+    offered: "Awaiting acceptance",
+    accepted: "Accepted",
+    reserving: "Funding",
+    active: "In play",
+    settlement_pending: "Settlement pending",
+    settled: "Settled",
+    refunded: "Refunded",
+    review: "Under review",
+    expired: "Expired",
+  } as Record<string, string>)[state] ?? "Status unavailable";
+}
+
+function CashGameContext({ terms, cubeValue, stale }: { terms: CashGameTerms; cubeValue: number; stale: boolean }) {
+  const currentLiability = cashLiability(terms, cubeValue);
+  return (
+    <section
+      className="w-full max-w-[960px] rounded border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-[10px] sm:px-3 sm:py-2 sm:text-xs"
+      aria-label="Cash-game terms"
+    >
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3">
+        <p><span className="text-[var(--color-text-muted)]">Accepted stake: </span><strong>{formatMicroUsd(BigInt(terms.stakeMicroUsd))} verUSD / point</strong></p>
+        <p><span className="text-[var(--color-text-muted)]">Current liability: </span><strong>{formatMicroUsd(currentLiability)} verUSD</strong></p>
+        <p><span className="text-[var(--color-text-muted)]">Maximum reserve: </span><strong>{formatMicroUsd(BigInt(terms.reservePerPlayerMicroUsd))} verUSD</strong></p>
+        <p><span className="text-[var(--color-text-muted)]">Quote status: </span><strong>{cashStateLabel(terms.state)}{stale ? " — last verified (stale)" : ""}</strong></p>
+        <p><span className="text-[var(--color-text-muted)]">Funds: </span><strong>{terms.testFunds ? "TEST FUNDS ONLY — no cash value" : "verUSD escrow"}</strong></p>
+        <p className="min-w-0"><span className="text-[var(--color-text-muted)]">Custody recipient: </span><strong className="break-all">{terms.custodyRecipient ?? "Escrow contract unavailable"}</strong></p>
+        <p className="col-span-2 sm:col-span-3"><span className="text-[var(--color-text-muted)]">Cash session started: </span><strong>{formatCashTime(terms.cashSessionStartedAt)}</strong></p>
+      </div>
+    </section>
+  );
+}
+
 // ─── Top Nav Header ────────────────────────────────────────────
 
 function TopNav({
@@ -232,7 +324,7 @@ function TopNav({
           ←
         </button>
         <span className="text-xs font-semibold text-[var(--color-text-muted)]">
-          {matchState ? `Rated · ${matchState.matchLength}pt` : "Practice"}
+          {matchState ? `Match · ${matchState.matchLength}pt` : isAIGame ? "Practice" : "Online game"}
         </span>
       </div>
 
@@ -255,16 +347,6 @@ function TopNav({
       )}
 
       <div className="flex items-center gap-1.5">
-        <div
-          className="flex items-center gap-1 cursor-pointer"
-          style={{ padding: "3px 8px", fontSize: "0.5625rem", color: "var(--color-gold-dark)" }}
-        >
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="var(--color-gold-dark)" strokeWidth="1.5">
-            <path d="M8 1.5L3 4v3c0 3 2 5.5 5 6.5 3-1 5-3.5 5-6.5V4L8 1.5z" />
-            <path d="M6 8l1.5 1.5L10.5 6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Fair
-        </div>
         <button
           onClick={onTogglePointNumbers}
           aria-label={showPointNumbers ? "Hide point numbers" : "Show point numbers"}
@@ -600,12 +682,18 @@ function SlideOutMenu({
   onDouble,
   canDouble,
   onShowMoveList,
+  cashTerms,
+  cashTermsRequired,
+  cubeValue,
 }: {
   onClose: () => void;
   onResign: () => void;
   onDouble?: () => void;
   canDouble?: boolean;
   onShowMoveList?: () => void;
+  cashTerms?: CashGameTerms | null;
+  cashTermsRequired: boolean;
+  cubeValue: number;
 }) {
   const [showResignConfirm, setShowResignConfirm] = useState(false);
   const [muted, setMuted] = useState(() => isSoundMuted());
@@ -613,10 +701,11 @@ function SlideOutMenu({
   const themeLabels = { light: "Light", dark: "Dark", lux: "Lux" } as const;
   const themes = ["light", "dark", "lux"] as const;
   const nextTheme = themes[(themes.indexOf(theme) + 1) % themes.length];
+  const financialTermsReady = !cashTermsRequired || cashTerms !== null;
 
   const menuItems = [
-    { label: "Offer Double", action: () => { if (canDouble && onDouble) { onDouble(); onClose(); } }, disabled: !canDouble },
-    { label: "Resign", action: () => setShowResignConfirm(true), danger: true },
+    { label: "Offer Double", action: () => { if (canDouble && onDouble) { onDouble(); onClose(); } }, disabled: !canDouble || !financialTermsReady },
+    { label: "Resign", action: () => setShowResignConfirm(true), danger: true, disabled: !financialTermsReady },
     { type: "separator" as const },
     { label: "Move List", action: () => { onShowMoveList?.(); onClose(); } },
     { label: "Verify Dice", action: () => { window.open("/verify-rolls", "_blank"); onClose(); } },
@@ -631,7 +720,7 @@ function SlideOutMenu({
       <div className="absolute inset-0 z-40" onClick={onClose} />
 
       {/* Panel */}
-      <FocusTrap>
+      <FocusTrap onEscape={onClose}>
         <div
           className="absolute top-0 right-0 z-50 flex flex-col animate-slide-in-right"
           role="dialog"
@@ -652,7 +741,7 @@ function SlideOutMenu({
           <button
             onClick={onClose}
             aria-label="Close menu"
-            style={{ background: "none", border: "none", color: "var(--color-text-muted)", cursor: "pointer", fontSize: "0.9375rem" }}
+            style={{ background: "none", border: "none", color: "var(--color-text-muted)", cursor: "pointer", fontSize: "0.9375rem", minWidth: 44, minHeight: 44 }}
           >
             ✕
           </button>
@@ -668,7 +757,7 @@ function SlideOutMenu({
               disabled={"disabled" in item && !!item.disabled}
               className="text-left transition-colors hover:bg-[var(--color-bg-elevated)]"
               style={{
-                padding: "7px 10px",
+                padding: "11px 10px",
                 borderRadius: 5,
                 border: "none",
                 background: "transparent",
@@ -693,7 +782,7 @@ function SlideOutMenu({
           style={{ background: "var(--color-overlay)" }}
           onClick={() => setShowResignConfirm(false)}
         >
-          <FocusTrap>
+          <FocusTrap onEscape={() => setShowResignConfirm(false)}>
             <div
               className="panel max-w-sm mx-4"
               role="dialog"
@@ -702,10 +791,15 @@ function SlideOutMenu({
               style={{ padding: "20px 24px" }}
               onClick={(e) => e.stopPropagation()}
             >
-              <h3 id="resign-dialog-title" style={{ fontSize: "1.0625rem", fontWeight: 700, marginBottom: 6, color: "var(--color-text-primary)" }}>Resign Game?</h3>
-              <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginBottom: 20 }}>
-                This counts as a loss. Are you sure you want to resign?
+              <h3 id="resign-dialog-title" style={{ fontSize: "1.0625rem", fontWeight: 700, marginBottom: 6, color: "var(--color-text-primary)" }}>Resign game?</h3>
+              <p style={{ fontSize: "0.8125rem", color: "var(--color-text-muted)", marginBottom: cashTerms ? 8 : 20 }}>
+                Resigning ends this game immediately as a normal loss.
               </p>
+              {cashTerms && (
+                <p style={{ fontSize: "0.8125rem", color: "var(--color-text-primary)", marginBottom: 20, fontWeight: 600 }}>
+                  Gross loss: {formatMicroUsd(cashLiability(cashTerms, cubeValue))} verUSD at cube {cubeValue}. Rake is charged to the winner from that gross liability.
+                </p>
+              )}
               <div style={{ display: "flex", gap: 10 }}>
                 <button
                   onClick={() => setShowResignConfirm(false)}
@@ -719,6 +813,7 @@ function SlideOutMenu({
                     color: "var(--color-text-primary)",
                     border: "1px solid var(--color-border-subtle)",
                     cursor: "pointer",
+                    minHeight: 44,
                   }}
                 >
                   Cancel
@@ -740,6 +835,7 @@ function SlideOutMenu({
                     color: "var(--color-danger)",
                     border: "1px solid var(--color-danger-muted)",
                     cursor: "pointer",
+                    minHeight: 44,
                   }}
                 >
                   Resign
@@ -766,11 +862,13 @@ function CenterControls({
   onRollDice,
   onEndTurn,
   onUndo,
+  openingRoll,
   cubeValue = 64,
   canDouble,
   onDouble,
   doubleOffered,
   doubleOfferedBy,
+  doubleOfferDeadlineAt,
   myColor,
   currentPlayer,
   onAcceptDouble,
@@ -778,6 +876,9 @@ function CenterControls({
   forcedMoveNotice,
   activeDieIndex,
   onDieClick,
+  cashTerms,
+  outcomeCommandsBlocked,
+  cashTermsRequired,
 }: {
   dice: [number, number] | null;
   movesRemaining: number[];
@@ -788,12 +889,14 @@ function CenterControls({
   gameOver: boolean;
   onRollDice: () => void;
   onEndTurn: () => void;
+  openingRoll: boolean;
   onUndo: () => void;
   cubeValue?: number;
   canDouble?: boolean;
   onDouble?: () => void;
   doubleOffered?: boolean;
   doubleOfferedBy?: Player | null;
+  doubleOfferDeadlineAt?: string | null;
   myColor?: Player;
   currentPlayer?: Player;
   onAcceptDouble?: () => void;
@@ -801,23 +904,46 @@ function CenterControls({
   forcedMoveNotice?: boolean;
   activeDieIndex?: 0 | 1;
   onDieClick?: () => void;
+  cashTerms?: CashGameTerms | null;
+  outcomeCommandsBlocked: boolean;
+  cashTermsRequired: boolean;
 }) {
-  if (gameOver) return null;
+  const decisionSeconds = useDeadlineSeconds(doubleOfferDeadlineAt);
+  const financialTermsReady = !cashTermsRequired || !outcomeCommandsBlocked;
+  const decisionOpen = decisionSeconds === null || decisionSeconds > 0;
+  if (outcomeCommandsBlocked) {
+    return <p role="alert" className="center-controls-notice max-w-lg text-center text-xs text-[var(--color-danger)]">Cash terms could not be reverified. Outcome-changing play is paused while the last verified terms remain visible.</p>;
+  }
+
 
   // Show accept/reject prompt when opponent has offered a double
   if (doubleOffered && doubleOfferedBy && myColor && doubleOfferedBy !== myColor) {
     return (
-      <div className="flex flex-col items-center justify-center" style={{ gap: 10 }}>
+      <div className="center-controls-double-offer flex max-w-lg flex-col items-center justify-center text-center" style={{ gap: 8 }}>
         <span className="text-sm font-bold text-[var(--color-gold-primary)]">
-          Opponent doubles to {cubeValue * 2}!
+          Opponent offers cube {cubeValue * 2}
         </span>
-        <div className="flex" style={{ gap: 8 }}>
+        {cashTerms ? (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            Accept: {cashDecisionSummary(cashTerms, cubeValue * 2)} Decline: the game ends with a gross loss of {formatMicroUsd(cashLiability(cashTerms, cubeValue))} verUSD at cube {cubeValue}. Rake is charged to the winner.
+          </p>
+        ) : cashTermsRequired ? (
+          <p role="alert" className="text-xs text-[var(--color-danger)]">Financial terms are unavailable. Accept and decline are disabled until the signed cash-game quote loads.</p>
+        ) : null}
+        {decisionSeconds !== null && (
+          <p role="status" className="text-xs font-semibold text-[var(--color-text-primary)]">
+            Respond within {decisionSeconds} second{decisionSeconds === 1 ? "" : "s"}.
+          </p>
+        )}
+        <div className="center-controls-double-decision flex" style={{ gap: 8 }}>
           <button
             onClick={onAcceptDouble}
+            disabled={!financialTermsReady || !decisionOpen || !onAcceptDouble}
             aria-label="Accept double"
-            className="cursor-pointer"
+            className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             style={{
               padding: "8px 20px",
+              minHeight: 44,
               borderRadius: 5,
               border: "none",
               background: "linear-gradient(135deg, var(--color-gold-dark), var(--color-gold-primary))",
@@ -830,10 +956,12 @@ function CenterControls({
           </button>
           <button
             onClick={onRejectDouble}
-            aria-label="Reject double"
-            className="cursor-pointer"
+            disabled={!financialTermsReady || !decisionOpen || !onRejectDouble}
+            aria-label="Decline double and lose at the current cube"
+            className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             style={{
               padding: "8px 20px",
+              minHeight: 44,
               borderRadius: 5,
               border: "1px solid var(--color-border-subtle)",
               background: "var(--color-bg-elevated)",
@@ -842,7 +970,7 @@ function CenterControls({
               fontWeight: 700,
             }}
           >
-            Reject
+            Decline
           </button>
         </div>
       </div>
@@ -854,7 +982,9 @@ function CenterControls({
     return (
       <div className="flex items-center justify-center" style={{ gap: 16 }}>
         <DoublingCube value={cubeValue} />
-        <span className="text-xs text-[var(--color-text-muted)]">Waiting for response...</span>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          Waiting for response{decisionSeconds === null ? "..." : ` · ${decisionSeconds}s remaining`}
+        </span>
       </div>
     );
   }
@@ -874,7 +1004,7 @@ function CenterControls({
   const diceList = getDiceList();
 
   return (
-    <div className="flex flex-col items-center justify-center" style={{ gap: 4 }}>
+    <div className="center-controls flex flex-col items-center justify-center" style={{ gap: 4 }}>
       {forcedMoveNotice && (
         <span
           className="text-[10px] font-semibold animate-fade-in"
@@ -883,17 +1013,18 @@ function CenterControls({
           Forced move
         </span>
       )}
-      <div className="flex items-center justify-center" style={{ gap: 16 }}>
+      <div className="center-controls-primary flex items-center justify-center" style={{ gap: 16 }}>
       <DoublingCube value={cubeValue} />
 
       {needsToRoll ? (
-        <div className="flex" style={{ gap: 8 }}>
+        <div className="center-controls-roll-actions flex" style={{ gap: 8 }}>
           {canDouble && onDouble && (
             <button
               onClick={onDouble}
               aria-label="Offer double"
               className="cursor-pointer"
               style={{
+                minHeight: 44,
                 padding: "8px 18px",
                 borderRadius: 5,
                 border: "1.5px solid var(--color-gold-primary)",
@@ -908,19 +1039,28 @@ function CenterControls({
           )}
           <button
             onClick={onRollDice}
-            aria-label="Roll dice"
-            title="Roll Dice (R)"
+            aria-label={openingRoll ? "Reveal the committed opening roll" : "Roll dice"}
+            title={openingRoll ? "Reveal Opening Roll (R)" : "Roll Dice (R)"}
             className="btn-primary"
-            style={{ padding: "8px 24px", fontSize: "0.8125rem", fontWeight: 700 }}
+            style={{ padding: "8px 24px", minHeight: 44, fontSize: "0.8125rem", fontWeight: 700 }}
           >
-            Roll Dice
+            {openingRoll ? "Reveal Opening Roll" : "Roll Dice"}
           </button>
         </div>
       ) : diceList.length > 0 ? (
         <div
-          className="flex"
+          className="center-controls-dice flex"
           style={{ gap: 8, cursor: isMyTurn && dice && dice[0] !== dice[1] ? "pointer" : "default" }}
           onClick={isMyTurn && dice && dice[0] !== dice[1] && onDieClick ? onDieClick : undefined}
+          role={isMyTurn && dice && dice[0] !== dice[1] && onDieClick ? "button" : undefined}
+          tabIndex={isMyTurn && dice && dice[0] !== dice[1] && onDieClick ? 0 : undefined}
+          aria-label={isMyTurn && dice && dice[0] !== dice[1] && onDieClick ? "Change active die" : undefined}
+          onKeyDown={isMyTurn && dice && dice[0] !== dice[1] && onDieClick ? (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onDieClick();
+            }
+          } : undefined}
         >
           {diceList.map((d, i) => {
             const isDoubles = dice && dice[0] === dice[1];
@@ -944,7 +1084,7 @@ function CenterControls({
       ) : null}
 
       {(isMyTurn && dice || canEndTurn) && (
-        <div className="flex" style={{ gap: 5 }}>
+        <div className="center-controls-turn-actions flex" style={{ gap: 5 }}>
           {canUndo && (
             <button
               onClick={onUndo}
@@ -953,6 +1093,7 @@ function CenterControls({
               className="cursor-pointer transition-colors"
               style={{
                 padding: "10px 14px",
+                minHeight: 44,
                 borderRadius: 5,
                 border: "1px solid var(--color-border-subtle)",
                 background: "var(--color-bg-elevated)",
@@ -972,6 +1113,7 @@ function CenterControls({
               className="cursor-pointer"
               style={{
                 padding: "10px 14px",
+                minHeight: 44,
                 borderRadius: 5,
                 border: "none",
                 background: "linear-gradient(135deg, var(--color-gold-dark), var(--color-gold-primary))",
@@ -994,20 +1136,70 @@ function CenterControls({
 
 const REPORT_REASONS = ["Cheating", "Harassment", "Inappropriate name", "Other"];
 
+function ReportStatusNotice({
+  action,
+  onRetry,
+}: {
+  action: { status: "idle" | "pending" | "success" | "error"; error?: string; receiptId?: string };
+  onRetry: (() => void) | undefined;
+}) {
+  if (action.status === "idle") return null;
+
+  if (action.status === "pending") {
+    return (
+      <aside className="w-full max-w-[960px] rounded border border-[var(--color-gold-primary)] bg-[var(--color-bg-surface)] px-3 py-2 text-center text-sm text-[var(--color-text-secondary)]" role="status" aria-live="polite">
+        Submitting your report. Waiting for the server acknowledgement…
+      </aside>
+    );
+  }
+
+  if (action.status === "success" && action.receiptId) {
+    const supportHref = `/support?reference=${encodeURIComponent(action.receiptId)}`;
+    return (
+      <aside className="w-full max-w-[960px] rounded border border-[var(--color-success)] bg-[var(--color-bg-surface)] px-3 py-2 text-center text-sm" role="status" aria-live="polite">
+        <p className="font-semibold text-[var(--color-success)]">Report received</p>
+        <p className="mt-1 text-[var(--color-text-secondary)]">
+          Receipt ID: <code className="select-text text-[var(--color-text-primary)]">{action.receiptId}</code>
+        </p>
+        <a className="mt-2 inline-flex min-h-11 items-center justify-center underline text-[var(--color-text-primary)]" href={supportHref}>
+          Get support for this report
+        </a>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="w-full max-w-[960px] rounded border border-[var(--color-danger)] bg-[var(--color-bg-surface)] px-3 py-2 text-center text-sm" role="alert" aria-live="assertive">
+      <p className="font-semibold text-[var(--color-danger)]">
+        {action.status === "success"
+          ? "The report acknowledgement did not include a receipt ID."
+          : action.error ?? "Your report could not be submitted."}
+      </p>
+      {action.status === "error" && onRetry && (
+        <button type="button" className="btn-secondary mt-2 min-h-11 px-4" onClick={onRetry}>
+          Retry report
+        </button>
+      )}
+    </aside>
+  );
+}
+
 function OpponentKebabMenu({
   opponentAddress,
   onBlock,
   onReport,
+  blockAction,
+  reportAction,
 }: {
   opponentAddress: string;
   onBlock: (address: string) => void;
   onReport: (address: string, reason: string) => void;
+  blockAction: { status: "idle" | "pending" | "success" | "error"; error?: string };
+  reportAction: { status: "idle" | "pending" | "success" | "error"; error?: string; receiptId?: string };
 }) {
   const [open, setOpen] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [reportReason, setReportReason] = useState(REPORT_REASONS[0]);
-  const [blocked, setBlocked] = useState(false);
-  const [reported, setReported] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1029,10 +1221,8 @@ function OpponentKebabMenu({
         aria-label="Player options"
         className="cursor-pointer transition-colors"
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 6,
-          border: "1px solid var(--color-border-subtle)",
+          width: 44,
+          height: 44,
           background: open ? "var(--color-bg-elevated)" : "transparent",
           display: "flex",
           alignItems: "center",
@@ -1112,6 +1302,7 @@ function OpponentKebabMenu({
                     fontSize: "0.6875rem",
                     fontWeight: 600,
                     cursor: "pointer",
+                    minHeight: 44,
                     fontFamily: "var(--font-body)",
                   }}
                 >
@@ -1120,24 +1311,25 @@ function OpponentKebabMenu({
                 <button
                   onClick={() => {
                     onReport(opponentAddress, reportReason);
-                    setReported(true);
                     setOpen(false);
                     setShowReport(false);
                   }}
+                  disabled={reportAction.status === "pending"}
                   style={{
                     flex: 1,
+                    minHeight: 44,
                     padding: "5px 10px",
                     borderRadius: 6,
                     border: "none",
                     background: "var(--color-danger)",
                     color: "#fff",
-                    fontSize: "0.6875rem",
+                    fontSize: "0.75rem",
                     fontWeight: 700,
-                    cursor: "pointer",
+                    cursor: reportAction.status === "pending" ? "wait" : "pointer",
                     fontFamily: "var(--font-body)",
                   }}
                 >
-                  Submit
+                  {reportAction.status === "pending" ? "Submitting…" : "Submit"}
                 </button>
               </div>
             </div>
@@ -1146,49 +1338,53 @@ function OpponentKebabMenu({
               <button
                 onClick={() => {
                   onBlock(opponentAddress);
-                  setBlocked(true);
                   setOpen(false);
                 }}
-                disabled={blocked}
+                disabled={blockAction.status === "pending" || blockAction.status === "success"}
                 style={{
                   display: "block",
                   width: "100%",
+                  minHeight: 44,
                   textAlign: "left",
                   padding: "7px 10px",
                   borderRadius: 5,
                   border: "none",
                   background: "transparent",
-                  color: blocked ? "var(--color-text-muted)" : "var(--color-text-secondary)",
+                  color: blockAction.status === "success" ? "var(--color-text-muted)" : "var(--color-text-secondary)",
                   fontSize: "0.75rem",
                   fontWeight: 500,
-                  cursor: blocked ? "default" : "pointer",
+                  cursor: blockAction.status === "pending" ? "wait" : "pointer",
                   fontFamily: "var(--font-body)",
-                  opacity: blocked ? 0.5 : 1,
+                  opacity: blockAction.status === "success" ? 0.5 : 1,
                 }}
               >
-                {blocked ? "Blocked" : "Block Player"}
+                {blockAction.status === "pending" ? "Blocking…" : blockAction.status === "success" ? "Blocked" : "Block Player"}
               </button>
               <button
                 onClick={() => setShowReport(true)}
-                disabled={reported}
+                disabled={reportAction.status === "pending" || reportAction.status === "success"}
                 style={{
                   display: "block",
                   width: "100%",
+                  minHeight: 44,
                   textAlign: "left",
                   padding: "7px 10px",
                   borderRadius: 5,
                   border: "none",
                   background: "transparent",
-                  color: reported ? "var(--color-text-muted)" : "var(--color-danger)",
+                  color: reportAction.status === "success" ? "var(--color-text-muted)" : "var(--color-danger)",
                   fontSize: "0.75rem",
                   fontWeight: 500,
-                  cursor: reported ? "default" : "pointer",
+                  cursor: reportAction.status === "pending" ? "wait" : "pointer",
                   fontFamily: "var(--font-body)",
-                  opacity: reported ? 0.5 : 1,
+                  opacity: reportAction.status === "success" ? 0.5 : 1,
                 }}
               >
-                {reported ? "Reported" : "Report Player"}
+                {reportAction.status === "pending" ? "Submitting…" : reportAction.status === "success" ? "Reported" : "Report Player"}
               </button>
+              {(blockAction.status === "error" || reportAction.status === "error") && (
+                <p role="alert" className="px-2 text-xs text-[var(--color-danger)]">{blockAction.error ?? reportAction.error}</p>
+              )}
             </>
           )}
         </div>
@@ -1221,6 +1417,7 @@ export function GameScreen({
   cubeOwner,
   doubleOffered = false,
   doubleOfferedBy,
+  doubleOfferDeadlineAt,
   canDouble = false,
   onDouble,
   onAcceptDouble,
@@ -1233,11 +1430,17 @@ export function GameScreen({
   lastReaction,
   onBlockPlayer,
   onReportPlayer,
+  blockAction,
+  reportAction,
   opponentAddress,
   matchState,
   matchOver = false,
   matchTurnHistory,
   turnTimeLimit = DEFAULT_TURN_TIME_LIMIT,
+  cashTerms = null,
+  cashTermsRequired = false,
+  cashTermsVerified = false,
+  onAcknowledgeRealityCheck,
   isAIGame,
   consultationEnabled,
   onToggleConsultation,
@@ -1251,17 +1454,20 @@ export function GameScreen({
   onClearHint,
 }: GameScreenProps) {
   const isMyTurn = gameState.currentPlayer === myColor;
+  const outcomeCommandsBlocked = cashTermsRequired && !cashTermsVerified;
   const opponentColor: Player = myColor === "white" ? "black" : "white";
   const myPips = getPipCount(gameState.board, myColor);
   const opponentPips = getPipCount(gameState.board, opponentColor);
-
-  const needsToRoll = isMyTurn && gameState.dice === null && !gameState.gameOver && !doubleOffered;
+  const openingRoll = gameState.turnNumber === 0 && gameState.moveHistory.length === 0;
+  const needsToRoll = !outcomeCommandsBlocked && (isMyTurn || openingRoll) && gameState.dice === null && !gameState.gameOver && !doubleOffered;
   const canEndTurn =
-    pendingConfirmation ||
-    (isMyTurn &&
-    gameState.dice !== null &&
-    legalMoves.length === 0 &&
-    !gameState.gameOver);
+    !outcomeCommandsBlocked && (
+      pendingConfirmation ||
+      (isMyTurn &&
+      gameState.dice !== null &&
+      legalMoves.length === 0 &&
+      !gameState.gameOver)
+    );
 
   // Dice order state: front die (index 0) is always the one used for moves.
   // Clicking dice swaps the order. Resets to 0 on new roll.
@@ -1274,7 +1480,7 @@ export function GameScreen({
   // Turn timer
   const [timeLeft, setTimeLeft] = useState(turnTimeLimit);
   useEffect(() => {
-    if (!turnStartedAt || gameState.gameOver) {
+    if (!turnStartedAt || gameState.gameOver || outcomeCommandsBlocked) {
       setTimeLeft(turnTimeLimit);
       return;
     }
@@ -1285,11 +1491,34 @@ export function GameScreen({
     tick();
     const interval = setInterval(tick, TURN_TIMER_TICK_MS);
     return () => clearInterval(interval);
-  }, [turnStartedAt, gameState.gameOver]);
+  }, [turnStartedAt, gameState.gameOver, outcomeCommandsBlocked, turnTimeLimit]);
 
   const [showMenu, setShowMenu] = useState(false);
   const [showMoveList, setShowMoveList] = useState(false);
   const [showPostGame, setShowPostGame] = useState(false);
+  const [showDoubleConfirm, setShowDoubleConfirm] = useState(false);
+  const [realityCheckNow, setRealityCheckNow] = useState(() => Date.now());
+  const [acknowledgingRealityCheck, setAcknowledgingRealityCheck] = useState(false);
+  const [realityCheckError, setRealityCheckError] = useState<string | null>(null);
+  const [lastReportReason, setLastReportReason] = useState<string | null>(null);
+  const cashSessionStartedAt = cashTerms?.cashSessionStartedAt ? Date.parse(cashTerms.cashSessionStartedAt) : Number.NaN;
+  const realityCheckDueAt = cashTerms?.realityCheckDueAt ? Date.parse(cashTerms.realityCheckDueAt) : Number.NaN;
+  const showRealityCheck = !gameState.gameOver && Number.isFinite(realityCheckDueAt) && realityCheckNow >= realityCheckDueAt;
+  const realityCheckMinutes = Number.isFinite(cashSessionStartedAt)
+    ? Math.max(1, Math.floor((realityCheckNow - cashSessionStartedAt) / 60_000))
+    : null;
+
+  useEffect(() => {
+    if (!cashTerms || gameState.gameOver) return;
+    const tick = () => setRealityCheckNow(Date.now());
+    tick();
+    const interval = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(interval);
+  }, [cashTerms?.cashSessionStartedAt, cashTerms?.realityCheckDueAt, gameState.gameOver]);
+
+  useEffect(() => {
+    setLastReportReason(null);
+  }, [opponentAddress]);
 
   // Selected candidate moves from consultation panel (shown as arrows on board)
   const [selectedCandidateMoves, setSelectedCandidateMoves] = useState<Move[] | null>(null);
@@ -1377,13 +1606,14 @@ export function GameScreen({
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       // Don't intercept when a modal is open
-      if (showMenu || gameState.gameOver) return;
+      if (showMenu || showDoubleConfirm || showRealityCheck || outcomeCommandsBlocked || gameState.gameOver) return;
 
       if (e.key === "r" || e.key === "R") {
         if (needsToRoll) {
           e.preventDefault();
           onRollDice();
         }
+
       } else if (e.key === "Enter") {
         if (canEndTurn) {
           e.preventDefault();
@@ -1399,7 +1629,18 @@ export function GameScreen({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [needsToRoll, canEndTurn, canUndo, isMyTurn, pendingConfirmation, gameState.dice, gameState.gameOver, showMenu, onRollDice, onEndTurn, onUndo]);
+  }, [needsToRoll, canEndTurn, canUndo, isMyTurn, pendingConfirmation, gameState.dice, gameState.gameOver, outcomeCommandsBlocked, showMenu, showDoubleConfirm, showRealityCheck, onRollDice, onEndTurn, onUndo]);
+
+  const submitReport = useCallback((address: string, reason: string) => {
+    if (!onReportPlayer) return;
+    setLastReportReason(reason);
+    onReportPlayer(address, reason);
+  }, [onReportPlayer]);
+
+  const retryReport = useCallback(() => {
+    if (!opponentAddress || !lastReportReason || reportAction?.status !== "error") return;
+    submitReport(opponentAddress, lastReportReason);
+  }, [lastReportReason, opponentAddress, reportAction?.status, submitReport]);
 
   // Reset post-game view when a new game starts
   useEffect(() => {
@@ -1409,8 +1650,28 @@ export function GameScreen({
   }, [gameState.gameOver]);
 
   const handleResign = useCallback(() => {
+    if (cashTermsRequired && !cashTermsVerified) return;
     onResign();
-  }, [onResign]);
+  }, [cashTermsRequired, cashTermsVerified, onResign]);
+
+  const requestDouble = useCallback(() => {
+    if (!onDouble || (cashTermsRequired && !cashTermsVerified)) return;
+    if (cashTerms) setShowDoubleConfirm(true);
+    else onDouble();
+  }, [cashTerms, cashTermsRequired, cashTermsVerified, onDouble]);
+
+  const acknowledgeDueRealityCheck = useCallback(async () => {
+    if (!onAcknowledgeRealityCheck || acknowledgingRealityCheck) return;
+    setAcknowledgingRealityCheck(true);
+    setRealityCheckError(null);
+    try {
+      await onAcknowledgeRealityCheck();
+    } catch {
+      setRealityCheckError("We could not record your acknowledgement. The game remains paused until the server confirms it.");
+    } finally {
+      setAcknowledgingRealityCheck(false);
+    }
+  }, [acknowledgingRealityCheck, onAcknowledgeRealityCheck]);
 
   const resultLabel =
     resultType === "backgammon"
@@ -1419,32 +1680,40 @@ export function GameScreen({
         ? "Gammon!"
         : "Normal";
 
-  const centerControls = (
-    <CenterControls
-      dice={gameState.dice}
-      movesRemaining={gameState.movesRemaining}
-      needsToRoll={needsToRoll}
-      canEndTurn={canEndTurn}
-      canUndo={canUndo}
-      isMyTurn={isMyTurn || pendingConfirmation}
-      gameOver={gameState.gameOver}
-      onRollDice={onRollDice}
-      onEndTurn={onEndTurn}
-      onUndo={onUndo}
-      cubeValue={cubeValue}
-      canDouble={canDouble}
-      onDouble={onDouble}
-      doubleOffered={doubleOffered}
-      doubleOfferedBy={doubleOfferedBy}
-      myColor={myColor}
-      currentPlayer={gameState.currentPlayer}
-      onAcceptDouble={onAcceptDouble}
-      onRejectDouble={onRejectDouble}
-      forcedMoveNotice={forcedMoveNotice}
-      activeDieIndex={activeDieIndex}
-      onDieClick={() => setActiveDieIndex(activeDieIndex === 0 ? 1 : 0)}
-    />
+  const renderCenterControls = (className: string) => (
+    <div className={className}>
+      <CenterControls
+        dice={gameState.dice}
+        movesRemaining={gameState.movesRemaining}
+        needsToRoll={needsToRoll}
+        openingRoll={openingRoll}
+        canEndTurn={canEndTurn}
+        canUndo={canUndo}
+        isMyTurn={!outcomeCommandsBlocked && (isMyTurn || pendingConfirmation)}
+        gameOver={gameState.gameOver}
+        onRollDice={onRollDice}
+        onEndTurn={onEndTurn}
+        onUndo={onUndo}
+        cubeValue={cubeValue}
+        canDouble={canDouble && !outcomeCommandsBlocked}
+        onDouble={requestDouble}
+        doubleOffered={doubleOffered}
+        doubleOfferedBy={doubleOfferedBy}
+        doubleOfferDeadlineAt={doubleOfferDeadlineAt}
+        myColor={myColor}
+        currentPlayer={gameState.currentPlayer}
+        onAcceptDouble={onAcceptDouble}
+        onRejectDouble={onRejectDouble}
+        forcedMoveNotice={forcedMoveNotice}
+        activeDieIndex={activeDieIndex}
+        onDieClick={() => setActiveDieIndex(activeDieIndex === 0 ? 1 : 0)}
+        cashTerms={cashTerms}
+        cashTermsRequired={cashTermsRequired}
+        outcomeCommandsBlocked={outcomeCommandsBlocked}
+      />
+    </div>
   );
+  const centerControls = renderCenterControls("game-controls-in-board");
 
   // When showPostGame is active, render PostGameAnalysis full-screen
   // For match-end, flatten all per-game histories for full-match analysis
@@ -1477,6 +1746,34 @@ export function GameScreen({
         {announcement}
       </div>
 
+      {showRealityCheck && cashTerms && !gameState.gameOver && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-black/70 p-4" role="presentation" style={{ userSelect: "text" }}>
+          <FocusTrap>
+            <div className="w-full max-w-md rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-surface)] p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="reality-check-title">
+              <h2 id="reality-check-title" className="text-xl font-bold">Time and money check</h2>
+              <p className="mt-3 text-[var(--color-text-secondary)]">
+                Your server-recorded cash session began {formatCashTime(cashTerms.cashSessionStartedAt)} and has been active for about {realityCheckMinutes} minutes. Your current normal-result liability is {formatMicroUsd(cashLiability(cashTerms, cubeValue))} verUSD; your maximum reserved loss is {formatMicroUsd(BigInt(cashTerms.reservePerPlayerMicroUsd))} verUSD.
+              </p>
+              {cashTerms.testFunds && (
+                <p className="mt-2 text-sm font-semibold text-[var(--color-warning)]">TEST FUNDS ONLY — no cash value.</p>
+              )}
+              <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
+                This check does not resign or settle the game. Leaving this screen does not confirm a payout or release the reserve. To forfeit, choose Resign from the game menu; it records a normal loss at the current cube, subject to final settlement. For support with limits or a break, review the responsible-play controls.
+              </p>
+              {realityCheckError && <p role="alert" className="mt-3 text-sm text-[var(--color-danger)]">{realityCheckError}</p>}
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button type="button" autoFocus onClick={() => void acknowledgeDueRealityCheck()} disabled={!onAcknowledgeRealityCheck || acknowledgingRealityCheck} className="min-h-11 rounded-lg bg-[var(--color-accent)] px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+                  {acknowledgingRealityCheck ? "Recording…" : "Continue game"}
+                </button>
+                <a href="/responsible-play" target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center rounded-lg border px-4 py-2 font-semibold">
+                  Review play controls
+                </a>
+              </div>
+            </div>
+          </FocusTrap>
+        </div>
+      )}
+
       {/* Top Nav Header */}
       <TopNav
         onBack={onBackToLobby}
@@ -1505,15 +1802,15 @@ export function GameScreen({
       )}
 
       {/* Game Area */}
-      <main className="flex-1 min-h-0 flex flex-col items-center relative px-0 sm:px-2 md:px-4" style={{ paddingTop: 2, paddingBottom: 2, gap: 2 }}>
+      <main className="game-screen-main flex-1 min-h-0 flex flex-col items-center relative px-0 sm:px-2 md:px-4" style={{ paddingTop: 2, paddingBottom: 2, gap: 2 }}>
         {/* Opponent bar */}
         <div className="w-full max-w-[960px] flex items-center gap-1">
           <div className="flex-1 min-w-0">
             <PlayerBar
               name={opponent || "Opponent"}
               color={opponentColor}
-              isActive={!isMyTurn && !gameState.gameOver}
-              timer={!isMyTurn && !gameState.gameOver && turnStartedAt ? timeLeft : null}
+              isActive={!outcomeCommandsBlocked && !isMyTurn && !gameState.gameOver}
+              timer={!outcomeCommandsBlocked && !isMyTurn && !gameState.gameOver && turnStartedAt ? timeLeft : null}
               isDisconnected={opponentDisconnected}
               isMe={false}
               matchScore={matchState ? { score: opponentColor === "white" ? matchState.whiteScore : matchState.blackScore, target: matchState.matchLength } : null}
@@ -1523,20 +1820,33 @@ export function GameScreen({
             <OpponentKebabMenu
               opponentAddress={opponentAddress}
               onBlock={onBlockPlayer}
-              onReport={onReportPlayer}
+              onReport={submitReport}
+              blockAction={blockAction ?? { status: "idle" }}
+              reportAction={reportAction ?? { status: "idle" }}
             />
           )}
         </div>
+        <ReportStatusNotice
+          action={reportAction ?? { status: "idle" }}
+          onRetry={lastReportReason ? retryReport : undefined}
+        />
+        {cashTermsRequired && !cashTermsVerified && (
+          <p role="alert" className="w-full max-w-[960px] rounded border border-[var(--color-danger)] px-3 py-2 text-center text-xs text-[var(--color-danger)]">
+            Cash terms could not be verified. Outcome-changing play and clock pressure are paused; the last verified terms remain visible while you retry.
+          </p>
+        )}
+        {cashTerms && <CashGameContext terms={cashTerms} cubeValue={cubeValue} stale={cashTermsRequired && !cashTermsVerified} />}
+
 
         {/* Board */}
-        <div className="flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
+        <div className="game-board-shell flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden">
           <Board
             board={gameState.board}
             myColor={myColor}
-            legalMoves={(isMyTurn || pendingConfirmation) ? legalMoves : []}
-            isMyTurn={isMyTurn || pendingConfirmation}
+            legalMoves={!outcomeCommandsBlocked && (isMyTurn || pendingConfirmation) ? legalMoves : []}
+            isMyTurn={!outcomeCommandsBlocked && (isMyTurn || pendingConfirmation)}
             dice={gameState.dice}
-            onMove={onMove}
+            onMove={outcomeCommandsBlocked ? () => undefined : onMove}
             movesRemaining={gameState.movesRemaining}
             lastOpponentMove={lastOpponentMove}
             gameOver={gameState.gameOver}
@@ -1547,6 +1857,8 @@ export function GameScreen({
             hintMoves={consultationEnabled ? (selectedCandidateMoves || hintMoves) : null}
           />
         </div>
+        {renderCenterControls("game-controls-mobile")}
+
 
         {/* Player bar */}
         <div className="w-full max-w-[960px] flex items-center gap-1">
@@ -1554,8 +1866,8 @@ export function GameScreen({
             <PlayerBar
               name="You"
               color={myColor}
-              isActive={isMyTurn && !gameState.gameOver}
-              timer={isMyTurn && !gameState.gameOver && turnStartedAt ? timeLeft : null}
+              isActive={!outcomeCommandsBlocked && isMyTurn && !gameState.gameOver}
+              timer={!outcomeCommandsBlocked && isMyTurn && !gameState.gameOver && turnStartedAt ? timeLeft : null}
               isMe={true}
               matchScore={matchState ? { score: myColor === "white" ? matchState.whiteScore : matchState.blackScore, target: matchState.matchLength } : null}
             />
@@ -1567,6 +1879,44 @@ export function GameScreen({
             />
           )}
         </div>
+        {showDoubleConfirm && cashTerms && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 backdrop-blur-sm"
+            style={{ background: "var(--color-overlay)" }}
+            onClick={() => setShowDoubleConfirm(false)}
+          >
+            <FocusTrap onEscape={() => setShowDoubleConfirm(false)}>
+              <section
+                className="panel max-w-md"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="double-confirm-title"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <h2 id="double-confirm-title" className="text-lg font-bold">Offer cube {cubeValue * 2}?</h2>
+                <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
+                  Your current normal-result gross exposure is {formatMicroUsd(cashLiability(cashTerms, cubeValue))} verUSD. If accepted, it becomes {formatMicroUsd(cashLiability(cashTerms, cubeValue * 2))} verUSD. Your maximum reserved loss remains {formatMicroUsd(BigInt(cashTerms.reservePerPlayerMicroUsd))} verUSD.
+                </p>
+                <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
+                  If the opponent declines, they lose at cube {cubeValue}. Rake is {cashTerms.rakeBps / 100}% of gross liability and is charged to the winner.
+                </p>
+                <div className="mt-5 flex gap-3">
+                  <button className="btn-secondary min-h-11 flex-1" onClick={() => setShowDoubleConfirm(false)}>Cancel</button>
+                  <button
+                    className="btn-primary min-h-11 flex-1"
+                    onClick={() => {
+                      setShowDoubleConfirm(false);
+                      onDouble?.();
+                    }}
+                  >
+                    Offer cube {cubeValue * 2}
+                  </button>
+                </div>
+              </section>
+            </FocusTrap>
+          </div>
+        )}
+
 
         {/* Disconnect countdown banner */}
         {disconnectCountdown != null && disconnectCountdown > 0 && (
@@ -1583,7 +1933,7 @@ export function GameScreen({
               whiteSpace: "nowrap",
             }}
           >
-            Opponent disconnected — forfeiting in {disconnectCountdown}s
+            Opponent disconnected — reconnection window: {disconnectCountdown}s
           </div>
         )}
 
@@ -1711,9 +2061,12 @@ export function GameScreen({
           <SlideOutMenu
             onClose={() => setShowMenu(false)}
             onResign={handleResign}
-            onDouble={onDouble}
-            canDouble={canDouble}
+            onDouble={requestDouble}
+            canDouble={canDouble && !outcomeCommandsBlocked}
             onShowMoveList={() => setShowMoveList(true)}
+            cashTerms={cashTerms}
+            cashTermsRequired={cashTermsRequired}
+            cubeValue={cubeValue}
           />
         )}
 
@@ -1721,7 +2074,7 @@ export function GameScreen({
         {showMoveList && turnHistory && (
           <>
             <div className="absolute inset-0 z-40" onClick={() => setShowMoveList(false)} />
-            <FocusTrap>
+            <FocusTrap onEscape={() => setShowMoveList(false)}>
               <div
                 className="absolute top-0 right-0 z-50 flex flex-col animate-slide-in-right"
                 role="dialog"
@@ -1742,7 +2095,7 @@ export function GameScreen({
                   <button
                     onClick={() => setShowMoveList(false)}
                     aria-label="Close move list"
-                    style={{ background: "none", border: "none", color: "var(--color-text-muted)", cursor: "pointer", fontSize: "0.9375rem" }}
+                    style={{ background: "none", border: "none", color: "var(--color-text-muted)", cursor: "pointer", fontSize: "0.9375rem", minWidth: 44, minHeight: 44 }}
                   >
                     ✕
                   </button>

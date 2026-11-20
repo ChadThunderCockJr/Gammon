@@ -14,7 +14,6 @@
     "@burnt-labs/abstraxion": "1.0.0-alpha.75",
     "@burnt-labs/signers": "1.0.0-alpha.6",
     "@cosmjs/encoding": "^0.38.1",
-    "@crossmint/client-sdk-react-ui": "^2.6.16",
     "@noble/curves": "^2.0.1",
     "@xion-beginner/backgammon-core": "workspace:*",
     "@xion-beginner/ui": "workspace:*",
@@ -22,7 +21,8 @@
     "next": "16.1.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^3.4.0"
+    "tailwind-merge": "^3.4.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",

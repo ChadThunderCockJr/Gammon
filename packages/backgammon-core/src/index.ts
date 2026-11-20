@@ -65,3 +65,37 @@ export {
   isCrawfordGame,
   pointsToWin,
 } from "./match";
+
+// Cash-game money and immutable rules
+export type {
+  CashGameRules,
+  CashSettlement,
+  CubeValue,
+  MicroUsd,
+  ResultMultiplier,
+} from "./cash";
+export {
+  CASH_GAME_RULES_V1,
+  DEFAULT_CUBE_CAP,
+  MAX_STAKE_MICRO_USD,
+  MICRO_USD_PER_CENT,
+  MICRO_USD_PER_DOLLAR,
+  assertCashStake,
+  assertCubeValue,
+  cashLiability,
+  effectiveResultMultiplier,
+  formatMicroUsd,
+  maximumReserve,
+  parseMicroUsd,
+  parseCashGameRules,
+  parseUsdToMicroUsd,
+  serializeCashGameRules,
+  settleCashGame,
+} from "./cash";
+
+// Shared canonical dice domain used by server and independent verifiers
+export type { DiceDerivationDomain } from "./dice-domain";
+export {
+  canonicalDiceCommitmentInput,
+  canonicalDiceDerivationInput,
+} from "./dice-domain";

@@ -1,100 +1,82 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { z } from "zod";
 
 type ServerMessage = Record<string, unknown> & { type: string };
+const ServerMessageSchema = z.object({ type: z.string() }).catchall(z.unknown());
 
-const BACKOFF_INITIAL_MS = 1000;
-const BACKOFF_MAX_MS = 30000;
+const BACKOFF_INITIAL_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
 const BACKOFF_JITTER = 0.25;
 const MAX_RETRIES = 50;
 
 export function useWebSocket(url: string) {
   const wsRef = useRef<WebSocket | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+  const shouldReconnectRef = useRef(false);
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<ServerMessage | null>(null);
-  const handlersRef = useRef<Map<string, Set<(msg: ServerMessage) => void>>>(
-    new Map()
-  );
+  const handlersRef = useRef<Map<string, Set<(message: ServerMessage) => void>>>(new Map());
   const retryCountRef = useRef(0);
-  const pendingNonceRef = useRef<string | null>(null);
+  const connectRef = useRef<() => void>(() => undefined);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
+    shouldReconnectRef.current = true;
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
     const ws = new WebSocket(url);
     wsRef.current = ws;
-
     ws.onopen = () => {
       retryCountRef.current = 0;
       setConnected(true);
     };
     ws.onclose = () => {
+      if (wsRef.current !== ws) return;
+      wsRef.current = null;
       setConnected(false);
-      if (retryCountRef.current >= MAX_RETRIES) return;
-      const base = Math.min(
-        BACKOFF_INITIAL_MS * Math.pow(2, retryCountRef.current),
-        BACKOFF_MAX_MS,
-      );
+      if (!shouldReconnectRef.current || retryCountRef.current >= MAX_RETRIES) return;
+      const base = Math.min(BACKOFF_INITIAL_MS * Math.pow(2, retryCountRef.current), BACKOFF_MAX_MS);
       const jitter = base * BACKOFF_JITTER * (Math.random() * 2 - 1);
-      const delay = Math.max(0, base + jitter);
       retryCountRef.current += 1;
-      setTimeout(connect, delay);
+      retryTimerRef.current = window.setTimeout(() => connectRef.current(), Math.max(0, base + jitter));
     };
     ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data) as ServerMessage;
-        setLastMessage(msg);
-        // Capture auth challenge nonce
-        if (msg.type === "auth_challenge") {
-          pendingNonceRef.current = (msg as any).nonce ?? null;
-        }
-        const handlers = handlersRef.current.get(msg.type);
-        if (handlers) {
-          handlers.forEach((h) => h(msg));
-        }
-        // Also fire wildcard handlers
-        const allHandlers = handlersRef.current.get("*");
-        if (allHandlers) {
-          allHandlers.forEach((h) => h(msg));
-        }
+        const result = ServerMessageSchema.safeParse(JSON.parse(String(event.data)));
+        if (!result.success) return;
+        const message = result.data as ServerMessage;
+        setLastMessage(message);
+        handlersRef.current.get(message.type)?.forEach((handler) => handler(message));
+        handlersRef.current.get("*")?.forEach((handler) => handler(message));
       } catch {
-        /* ignore parse errors */
+        return;
       }
     };
   }, [url]);
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   const disconnect = useCallback(() => {
+    shouldReconnectRef.current = false;
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
+    setConnected(false);
   }, []);
 
-  const sendMessage = useCallback((msg: Record<string, unknown>) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
-    } else {
-      console.warn("[WebSocket] Message dropped (not connected):", msg.type);
-    }
+  const sendMessage = useCallback((message: Record<string, unknown>): boolean => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify(message));
+    return true;
   }, []);
 
-  const on = useCallback(
-    (type: string, handler: (msg: ServerMessage) => void) => {
-      if (!handlersRef.current.has(type)) {
-        handlersRef.current.set(type, new Set());
-      }
-      handlersRef.current.get(type)!.add(handler);
-      return () => {
-        handlersRef.current.get(type)?.delete(handler);
-      };
-    },
-    []
-  );
-
-  useEffect(() => {
-    return () => {
-      wsRef.current?.close();
-    };
+  const on = useCallback((type: string, handler: (message: ServerMessage) => void) => {
+    if (!handlersRef.current.has(type)) handlersRef.current.set(type, new Set());
+    handlersRef.current.get(type)?.add(handler);
+    return () => { handlersRef.current.get(type)?.delete(handler); };
   }, []);
 
-  const getPendingNonce = useCallback(() => pendingNonceRef.current, []);
+  useEffect(() => disconnect, [disconnect]);
 
-  return { connect, disconnect, sendMessage, connected, lastMessage, on, getPendingNonce };
+  return { connect, disconnect, sendMessage, connected, lastMessage, on };
 }

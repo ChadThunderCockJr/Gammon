@@ -1,35 +1,151 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { GameDiceHistory, createDiceProof, type DrandDiceProof } from "./dice.js";
-import { latestBeacon } from "./drand.js";
-import { DEFAULT_TURN_TIME_LIMIT_SEC, DOUBLE_DEPOSIT_TIMEOUT_MS, STALLING_MIN_MOVES, STALLING_THRESHOLD_PCTG, DISCONNECT_GRACE_SEC, DISCONNECT_GRACE_DOUBLE_SEC, DISCONNECT_CHECK_INTERVAL_MS } from "./config.js";
+import type { WebSocket } from "ws";
+import { GameDiceHistory, createDiceProof, diceCommitmentContext, type DrandDiceProof } from "./dice.js";
+import { DRAND_CHAIN_HASH, fetchFutureBeacon, latestBeacon } from "./drand.js";
+import { persistFutureRoundCommitment, revealCommittedDice } from "./dice-commitment-store.js";
+import { DEFAULT_TURN_TIME_LIMIT_SEC, STALLING_MIN_MOVES, STALLING_THRESHOLD_PCTG, DISCONNECT_GRACE_SEC, DISCONNECT_CHECK_INTERVAL_MS } from "./config.js";
 import { logger } from "./logger.js";
 import {
+  CASH_GAME_RULES_V1,
   createGameState,
-  setDice,
-  makeMove,
-  endTurn,
-  hasLegalMoves,
   getLegalFirstMoves,
+  hasLegalMoves,
   canDouble,
   acceptDouble,
   rejectDouble,
+  endTurn,
+  makeMove,
+  parseCashGameRules,
+  serializeCashGameRules,
+  setDice,
+  setOpeningRoll,
+  type CashGameRules,
   type GameState,
   type Player,
   type Move,
   type ResultType,
 } from "@xion-beginner/backgammon-core";
-import type { BalanceService } from "./balance-service.js";
-import type { ServerGame, PlayerConnection, ServerMessage } from "./types.js";
+import {
+  commitGameCommand,
+  expireOrphanWaitingGames,
+  loadActiveGames,
+  loadCurrentGameForParticipant,
+  loadGame,
+  loadGameForParticipant,
+  persistDiceRoll as persistDiceRollRecord,
+  persistGame as persistGameRecord,
+  persistMove as persistMoveRecord,
+  renewGameOwnership,
+  reserveWaitingGame,
+  finishGame as finishGameRecord,
+  replayGameCommand,
+  type GameCommand,
+  type PersistedGameServerState,
+} from "./game-store.js";
+
+import { getRedis } from "./redis.js";
+import { getPool } from "./db.js";
+import type { GameReviewReason, ServerGame, PlayerConnection, ServerMessage } from "./types.js";
+import { sendWebSocketData } from "./ws-send.js";
+import {
+  cashGameJoinGate,
+  cashGamePlayGate,
+  captureCashGameReviewSnapshot,
+  cashGameRecoveryState,
+  quoteForGame,
+  startCashGameSession,
+} from "./cash-game-store.js";
+type MutationCommand = {
+  readonly commandId: string;
+  readonly expectedRevision: number;
+  readonly commandType: string;
+};
+
+interface CashGameSnapshot {
+  revision: number;
+  phase: ServerGame["phase"];
+  deadlineAt: number | null;
+  gameState: GameState;
+  playerWhite: PlayerConnection | null;
+  playerBlack: PlayerConnection | null;
+  wagerAmount: number;
+  status: ServerGame["status"];
+  turnTimeLimit: number;
+  doublingAllowed: boolean;
+  turnMoveStack: GameState[];
+  pendingConfirmation: string | null;
+  disconnectedPlayer: string | null;
+  disconnectedAt: number | null;
+  escrowStatus: ServerGame["escrowStatus"];
+  pendingResignation: ServerGame["pendingResignation"];
+  moveTimes: number[];
+  stallingWarned: boolean;
+  pendingMatchLength: number | undefined;
+  cashQuoteId: string | undefined;
+  reviewReason: GameReviewReason | undefined;
+  pendingDoubleOffer: ServerGame["pendingDoubleOffer"];
+  cashRules: CashGameRules | undefined;
+}
+export const GAME_RUNTIME_INSTANCE_ID = process.env.FLY_MACHINE_ID || randomUUID();
+
+class CanonicalGameReloadedError extends Error {
+  constructor() {
+    super("GAME_REVISION_CONFLICT");
+    this.name = "CanonicalGameReloadedError";
+  }
+}
+
+function cashReviewDeadline(): Date {
+  const configured = Number(process.env.CASH_GAME_REVIEW_TIMEOUT_SECONDS);
+  const seconds = Number.isSafeInteger(configured) && configured >= 3_600 && configured <= 30 * 86_400
+    ? configured
+    : 7 * 86_400;
+  return new Date(Date.now() + seconds * 1_000);
+}
+const CASH_GAME_LEASE_SECONDS = 30;
+const CASH_GAME_LEASE_RENEWAL_MS = 10_000;
+
+
+function isHydratableParticipantGame(status: string, phase: string, escrowStatus: string): boolean {
+  return ["waiting", "depositing", "playing"].includes(status)
+    || (status === "abandoned" && phase === "review" && escrowStatus === "active");
+}
+
+
+const WAITING_GAME_EXPIRY_MS = 15 * 60 * 1_000;
 
 export class GameManager {
   private games = new Map<string, ServerGame>();
   private playerGames = new Map<string, string>(); // address -> gameId
   private diceHistories = new Map<string, GameDiceHistory>();
+  private readonly instanceId = GAME_RUNTIME_INSTANCE_ID;
   private gameLocks = new Map<string, Promise<void>>();
-  private balanceService: BalanceService | null;
+  private terminalHandler: ((gameId: string, winner: Player, resultType: ResultType) => Promise<void>) | null = null;
 
-  constructor(balanceService?: BalanceService) {
-    this.balanceService = balanceService ?? null;
+  setTerminalHandler(
+    handler: (gameId: string, winner: Player, resultType: ResultType) => Promise<void>,
+  ): void {
+    this.terminalHandler = handler;
+  }
+
+  private async emitTerminalResult(
+    game: ServerGame,
+    winner: Player,
+    resultType: ResultType,
+  ): Promise<void> {
+    if (this.terminalHandler) {
+      await this.terminalHandler(game.id, winner, resultType);
+      return;
+    }
+    this.broadcastToGame(game, {
+      type: "game_over",
+      game_id: game.id,
+      winner,
+      result_type: resultType,
+      game_state: game.gameState,
+      revision: game.revision,
+    });
+    this.releaseTerminalGame(game.id);
   }
 
   private async withGameLock<T>(gameId: string, fn: () => T | Promise<T>): Promise<T> {
@@ -38,18 +154,339 @@ export class GameManager {
     const next = new Promise<void>(r => { resolve = r; });
     this.gameLocks.set(gameId, next);
     await prev;
+    const game = this.games.get(gameId);
+    const snapshot = game ? this.captureCashGame(game) : null;
+    const playerGamesSnapshot = snapshot ? new Map(this.playerGames) : null;
     try {
       return await fn();
+    } catch (error) {
+      if (
+        snapshot &&
+        game &&
+        this.games.get(gameId) === game &&
+        !(error instanceof CanonicalGameReloadedError) &&
+        !(error instanceof Error && error.message === "GAME_OWNERSHIP_LOST")
+      ) {
+        this.restoreCashGame(game, snapshot);
+        this.playerGames = playerGamesSnapshot!;
+      }
+      throw error;
     } finally {
       resolve!();
+      if (this.gameLocks.get(gameId) === next) this.gameLocks.delete(gameId);
     }
   }
 
-  private async persistGame(game: ServerGame): Promise<void> {
-    // Persist to PostgreSQL (primary) and Redis (cache for backward compat)
+  private captureCashGame(game: ServerGame): CashGameSnapshot {
+    return {
+      revision: game.revision,
+      phase: game.phase,
+      deadlineAt: game.deadlineAt,
+      gameState: structuredClone(game.gameState),
+      playerWhite: game.playerWhite,
+      playerBlack: game.playerBlack,
+      wagerAmount: game.wagerAmount,
+      status: game.status,
+      turnTimeLimit: game.turnTimeLimit,
+      doublingAllowed: game.doublingAllowed,
+      turnMoveStack: structuredClone(game.turnMoveStack),
+      pendingConfirmation: game.pendingConfirmation,
+      disconnectedPlayer: game.disconnectedPlayer,
+      disconnectedAt: game.disconnectedAt,
+      escrowStatus: game.escrowStatus,
+      pendingResignation: structuredClone(game.pendingResignation),
+      moveTimes: [...game.moveTimes],
+      stallingWarned: game.stallingWarned,
+      pendingMatchLength: game.pendingMatchLength,
+      cashQuoteId: game.cashQuoteId,
+      reviewReason: game.reviewReason,
+      pendingDoubleOffer: structuredClone(game.pendingDoubleOffer),
+      cashRules: game.cashRules,
+    };
+  }
+
+
+  private cashRulesFor(game: ServerGame): CashGameRules {
+    if (game.escrowStatus !== "active") return CASH_GAME_RULES_V1;
+    if (!game.cashRules) throw new Error("CASH_RULES_SNAPSHOT_REQUIRED");
+    return game.cashRules;
+  }
+
+  private async requireCashPlayGate(game: ServerGame, principal: string): Promise<void> {
+    if (game.escrowStatus !== "active") return;
+    const gate = await cashGamePlayGate(game.id, principal);
+    if (!gate.allowed) throw new Error(gate.code ?? "CASH_GAME_PLAY_BLOCKED");
+  }
+
+  private async startCashSessionIfReady(game: ServerGame): Promise<void> {
+    if (
+      game.escrowStatus !== "active" ||
+      game.status !== "playing" ||
+      !game.playerWhite ||
+      !game.playerBlack
+    ) return;
+    if (!(await startCashGameSession(game.id))) throw new Error("CASH_GAME_START_ACK_REQUIRED");
+  }
+
+  private async hydrateParticipantGame(gameId: string, principal: string): Promise<ServerGame | null> {
+    const existing = this.games.get(gameId);
+    if (existing) {
+      return isHydratableParticipantGame(existing.status, existing.phase, existing.escrowStatus)
+        && this.getPlayerColor(existing, principal)
+        ? existing
+        : null;
+    }
+    const stored = await loadGameForParticipant(gameId, principal);
+    if (!stored || !isHydratableParticipantGame(stored.status, stored.phase, stored.escrowStatus)) return null;
+    const state = stored.serverState;
+    const cashRules = stored.escrowStatus === "active"
+      ? parseCashGameRules(state.cashRules)
+      : undefined;
+    if (!(await renewGameOwnership(gameId, this.instanceId, CASH_GAME_LEASE_SECONDS))) {
+      throw new Error("GAME_OWNERSHIP_LOST");
+    }
+    const game: ServerGame = {
+      id: stored.id,
+      revision: stored.revision,
+      phase: stored.phase,
+      deadlineAt: stored.deadlineAt?.getTime() ?? null,
+      gameState: stored.gameState,
+      wagerAmount: stored.wagerAmount,
+      status: stored.status as ServerGame["status"],
+      playerWhite: this.detachedPlayer(stored.playerWhite),
+      playerBlack: this.detachedPlayer(stored.playerBlack),
+      createdAt: stored.createdAt.getTime(),
+      turnTimer: null,
+      ownershipTimer: null,
+      turnTimeLimit: cashRules?.turnTimeLimitSeconds ?? stored.turnTimeLimit,
+      cashRules,
+      doublingAllowed: state.doublingAllowed ?? true,
+      turnMoveStack: state.turnMoveStack ?? [],
+      pendingConfirmation: state.pendingConfirmation ?? null,
+      disconnectTimer: null,
+      disconnectedPlayer: state.disconnectedPlayer ?? null,
+      disconnectedAt: state.disconnectedAt ?? null,
+      escrowStatus: stored.escrowStatus as ServerGame["escrowStatus"],
+      pendingResignation: state.pendingResignation ?? null,
+      moveTimes: [],
+      stallingWarned: false,
+      pendingMatchLength: state.pendingMatchLength ?? undefined,
+      cashQuoteId: state.cashQuoteId ?? undefined,
+      reviewReason: state.reviewReason ?? undefined,
+      pendingDoubleOffer: state.pendingDoubleOffer ?? null,
+    };
+    this.games.set(gameId, game);
+    if (game.playerWhite) this.playerGames.set(game.playerWhite.address, gameId);
+    if (game.playerBlack) this.playerGames.set(game.playerBlack.address, gameId);
+    await this.startCashSessionIfReady(game);
+    this.scheduleCashOwnershipRenewal(game);
+    if (game.status === "waiting") {
+      this.scheduleWaitingExpiry(game);
+    } else if (game.status === "playing" && game.disconnectedPlayer && game.disconnectedAt !== null) {
+      this.scheduleDisconnectGraceTimer(game, game.disconnectedPlayer, game.disconnectedAt);
+    } else if (game.status === "playing" && game.deadlineAt !== null) {
+      this.scheduleTurnTimer(game);
+    }
+    return game;
+  }
+
+  async hydrateGameForParticipant(gameId: string, principal: string): Promise<ServerGame | null> {
+    return this.hydrateParticipantGame(gameId, principal);
+  }
+
+  private scheduleCashOwnershipRenewal(game: ServerGame): void {
+    if (game.ownershipTimer) clearInterval(game.ownershipTimer);
+    game.ownershipTimer = setInterval(() => {
+      void renewGameOwnership(game.id, this.instanceId, CASH_GAME_LEASE_SECONDS).then(async (owned) => {
+        if (!owned) {
+          await this.reloadCanonicalCashGame(game, false);
+          this.relinquishCashOwnership(game);
+        }
+      }).catch(() => this.relinquishCashOwnership(game));
+    }, CASH_GAME_LEASE_RENEWAL_MS);
+  }
+
+  private relinquishCashOwnership(game: ServerGame): void {
+    if (game.ownershipTimer) clearInterval(game.ownershipTimer);
+    game.ownershipTimer = null;
+    this.clearTurnTimer(game);
+    this.cancelDisconnectGracePeriod(game);
+  }
+
+  private async ensureCashOwnership(game: ServerGame): Promise<void> {
+
+    const owned = await renewGameOwnership(game.id, this.instanceId, CASH_GAME_LEASE_SECONDS);
+    if (!owned) {
+      await this.reloadCanonicalCashGame(game, false);
+      this.relinquishCashOwnership(game);
+      throw new Error("GAME_OWNERSHIP_LOST");
+    }
+    if (!game.ownershipTimer) this.scheduleCashOwnershipRenewal(game);
+  }
+
+  private async replayCashCommand<T>(
+    gameId: string,
+    principal: string,
+    command: MutationCommand | undefined,
+  ): Promise<T | undefined> {
+    if (!command) throw new Error("GAME_COMMAND_REQUIRED");
+    const replay = await replayGameCommand(gameId, {
+      ...command,
+      principal,
+      commandType: command.commandType,
+      eventType: command.commandType,
+    });
+    if (!replay) return undefined;
+    const game = this.games.get(gameId);
+    if (game && await this.reloadCanonicalCashGame(game)) throw new CanonicalGameReloadedError();
+    throw new Error("GAME_REVISION_CONFLICT");
+  }
+
+  private async reloadCanonicalCashGame(game: ServerGame, scheduleTimer = true): Promise<boolean> {
+    const stored = await loadGame(game.id);
+    if (!stored) return false;
+    if (!isHydratableParticipantGame(stored.status, stored.phase, stored.escrowStatus)) {
+      this.detachGame(game);
+      return false;
+    }
+    const state = stored.serverState;
+    let cashRules: CashGameRules | undefined;
+    if (stored.escrowStatus === "active") {
+      try {
+        cashRules = parseCashGameRules(state.cashRules);
+      } catch {
+        this.relinquishCashOwnership(game);
+        return false;
+      }
+    }
+    this.clearTurnTimer(game);
+    Object.assign(game, {
+      revision: stored.revision,
+      phase: stored.phase,
+      deadlineAt: stored.deadlineAt?.getTime() ?? null,
+      gameState: stored.gameState,
+      wagerAmount: stored.wagerAmount,
+      status: stored.status,
+      createdAt: stored.createdAt.getTime(),
+      playerWhite: game.playerWhite?.address === stored.playerWhite ? game.playerWhite : this.detachedPlayer(stored.playerWhite),
+      playerBlack: game.playerBlack?.address === stored.playerBlack ? game.playerBlack : this.detachedPlayer(stored.playerBlack),
+      turnTimeLimit: cashRules?.turnTimeLimitSeconds ?? stored.turnTimeLimit,
+      cashRules,
+      doublingAllowed: state.doublingAllowed ?? true,
+      turnMoveStack: state.turnMoveStack ?? [],
+      pendingConfirmation: state.pendingConfirmation ?? null,
+      disconnectedPlayer: state.disconnectedPlayer ?? null,
+      disconnectedAt: state.disconnectedAt ?? null,
+      escrowStatus: stored.escrowStatus,
+      pendingResignation: state.pendingResignation ?? null,
+      pendingMatchLength: state.pendingMatchLength ?? undefined,
+      cashQuoteId: state.cashQuoteId ?? undefined,
+      reviewReason: state.reviewReason ?? undefined,
+      pendingDoubleOffer: state.pendingDoubleOffer ?? null,
+    });
+    if (scheduleTimer && game.status === "waiting") {
+      this.scheduleWaitingExpiry(game);
+    } else if (scheduleTimer && game.status === "playing" && game.disconnectedPlayer && game.disconnectedAt !== null) {
+      this.scheduleDisconnectGraceTimer(game, game.disconnectedPlayer, game.disconnectedAt);
+    } else if (scheduleTimer && game.status === "playing" && game.deadlineAt !== null) {
+      this.scheduleTurnTimer(game);
+    }
+    return true;
+  }
+  private restoreCashGame(game: ServerGame, snapshot: CashGameSnapshot): void {
+    clearTimeout(game.turnTimer ?? undefined);
+    Object.assign(game, snapshot, { turnTimer: null });
+    if (game.status === "playing" && game.disconnectedPlayer && game.disconnectedAt !== null) {
+      this.scheduleDisconnectGraceTimer(game, game.disconnectedPlayer, game.disconnectedAt);
+    } else if (game.status === "playing" && game.deadlineAt !== null) {
+      this.scheduleTurnTimer(game);
+    }
+  }
+  private persistedServerState(game: ServerGame): PersistedGameServerState {
+    return {
+      turnMoveStack: game.turnMoveStack,
+      pendingConfirmation: game.pendingConfirmation,
+      pendingResignation: game.pendingResignation,
+      pendingDoubleOffer: game.pendingDoubleOffer,
+      disconnectedPlayer: game.disconnectedPlayer,
+      disconnectedAt: game.disconnectedAt,
+      pendingMatchLength: game.pendingMatchLength,
+      doublingAllowed: game.doublingAllowed,
+      cashQuoteId: game.cashQuoteId,
+      reviewReason: game.reviewReason,
+      cashRules: game.cashRules ? JSON.parse(serializeCashGameRules(game.cashRules)) as Record<string, unknown> : undefined,
+    };
+  }
+  private systemCommand(game: ServerGame, commandType: string, identity: string | number): MutationCommand {
+    return {
+      commandId: `system:${game.id}:${commandType}:${identity}`,
+      expectedRevision: game.revision,
+      commandType,
+    };
+  }
+
+  private detachedPlayer(address: string | null): PlayerConnection | null {
+    if (!address) return null;
+    return {
+      address,
+      rating: 0,
+      connectedAt: 0,
+      ws: { readyState: 3 } as WebSocket,
+    };
+  }
+
+  private async commitMutation(
+    game: ServerGame,
+    principal: string,
+    command: MutationCommand | undefined,
+    eventType: string,
+    eventPayload: Record<string, unknown>,
+    result: unknown,
+  ): Promise<unknown> {
+    await this.ensureCashOwnership(game);
+    if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+    const storedCommand: GameCommand = {
+      commandId: command.commandId,
+      expectedRevision: command.expectedRevision,
+      principal,
+      commandType: command.commandType,
+      eventType,
+    };
     try {
-      const gameStore = await import("./game-store.js");
-      await gameStore.persistGame(
+      const committed = await commitGameCommand({
+        gameId: game.id,
+        command: storedCommand,
+        status: game.status,
+        escrowStatus: game.escrowStatus,
+        gameState: game.gameState,
+        result,
+        eventPayload,
+        phase: game.phase,
+        deadlineAt: game.deadlineAt === null ? null : new Date(game.deadlineAt),
+        serverState: this.persistedServerState(game),
+        ownerInstanceId: this.instanceId,
+        cashReview: eventType === "cash_game_review" && typeof eventPayload.reason === "string"
+          ? { reason: eventPayload.reason as GameReviewReason, deadlineAt: cashReviewDeadline() }
+          : undefined,
+      });
+      game.revision = committed.revision;
+      return committed.result;
+    } catch (error) {
+      if (error instanceof Error && error.message === "GAME_REVISION_CONFLICT") {
+        if (await this.reloadCanonicalCashGame(game)) throw new CanonicalGameReloadedError();
+      }
+      if (error instanceof Error && error.message === "GAME_OWNERSHIP_LOST") {
+        await this.reloadCanonicalCashGame(game, false);
+        this.relinquishCashOwnership(game);
+      }
+      throw error;
+    }
+  }
+
+  private async persistGame(game: ServerGame): Promise<boolean> {
+    let durable = false;
+    try {
+      durable = await persistGameRecord(
         game.id,
         game.playerWhite?.address || null,
         game.playerBlack?.address || null,
@@ -58,30 +495,41 @@ export class GameManager {
         game.escrowStatus,
         game.gameState,
         game.turnTimeLimit,
+        game.revision,
+        game.phase,
+        game.deadlineAt === null ? null : new Date(game.deadlineAt),
+        this.persistedServerState(game),
+        this.instanceId,
       );
     } catch {
-      // PostgreSQL persistence failed, fall through to Redis
+      durable = false;
     }
+    if (!durable) return false;
 
     try {
-      const { getRedis: getR } = await import("./redis.js");
-      const r = getR();
-      if (!r) return;
-      const serializable = {
-        id: game.id,
-        gameState: game.gameState,
-        wagerAmount: game.wagerAmount,
-        status: game.status,
-        playerWhiteAddress: game.playerWhite?.address || null,
-        playerBlackAddress: game.playerBlack?.address || null,
-        turnMoveStack: game.turnMoveStack,
-        pendingConfirmation: game.pendingConfirmation,
-        moveHistory: game.gameState.moveHistory || [],
-      };
-      await r.set(`active_game:${game.id}`, JSON.stringify(serializable), "EX", 7200);
+      const redis = getRedis();
+      if (redis) {
+        const serializable = {
+          id: game.id,
+          revision: game.revision,
+          phase: game.phase,
+          deadlineAt: game.deadlineAt,
+          gameState: game.gameState,
+          wagerAmount: game.wagerAmount,
+          status: game.status,
+          escrowStatus: game.escrowStatus,
+          playerWhiteAddress: game.playerWhite?.address || null,
+          playerBlackAddress: game.playerBlack?.address || null,
+          ...this.persistedServerState(game),
+          moveHistory: game.gameState.moveHistory || [],
+          turnTimeLimit: game.turnTimeLimit,
+        };
+        await redis.set(`active_game:${game.id}`, JSON.stringify(serializable), "EX", 7200);
+      }
     } catch {
-      // Non-critical
+      // Redis is a disposable cache; PostgreSQL durability is authoritative.
     }
+    return durable;
   }
 
   /** Persist a dice roll to PostgreSQL for the audit trail */
@@ -94,12 +542,7 @@ export class GameManager {
     drandProof?: { round: number; randomness: string; signature: string },
     drandFailed?: boolean,
   ): Promise<void> {
-    try {
-      const gameStore = await import("./game-store.js");
-      await gameStore.persistDiceRoll(gameId, turnNumber, player, die1, die2, drandProof, drandFailed);
-    } catch {
-      // Non-critical
-    }
+    await persistDiceRollRecord(gameId, turnNumber, player, die1, die2, drandProof, drandFailed);
   }
 
   /** Persist a move to PostgreSQL for replay/audit */
@@ -111,150 +554,101 @@ export class GameManager {
     to: number,
     gameStateAfter: GameState,
   ): Promise<void> {
-    try {
-      const gameStore = await import("./game-store.js");
-      await gameStore.persistMove(gameId, turnNumber, player, from, to, gameStateAfter);
-    } catch {
-      // Non-critical
-    }
+    await persistMoveRecord(gameId, turnNumber, player, from, to, gameStateAfter);
   }
 
   private async deletePersistedGame(gameId: string): Promise<void> {
-    // Mark game as finished in PostgreSQL
-    try {
-      const gameStore = await import("./game-store.js");
-      const game = this.games.get(gameId);
-      await gameStore.finishGame(gameId, game?.status || "finished", game?.escrowStatus || "none");
-    } catch {
-      // Non-critical
+    const game = this.games.get(gameId);
+    if (!(await finishGameRecord(gameId, game?.status || "finished", game?.escrowStatus || "none"))) {
+      throw new Error("GAME_TERMINATION_PERSISTENCE_FAILED");
     }
-
-    // Clean up Redis cache
     try {
-      const { getRedis: getR } = await import("./redis.js");
-      const r = getR();
-      if (!r) return;
-      await r.del(`active_game:${gameId}`);
+      const redis = getRedis();
+      if (redis) await redis.del(`active_game:${gameId}`);
     } catch {
-      // Non-critical
+      // Redis is a disposable cache; PostgreSQL durability is authoritative.
     }
   }
-
   async restoreGames(): Promise<number> {
-    // Try PostgreSQL first, fall back to Redis
-    try {
-      const gameStore = await import("./game-store.js");
-      const activeGames = await gameStore.loadActiveGames();
-      if (activeGames.length > 0) {
-        let restored = 0;
-        for (const data of activeGames) {
-          if (data.status !== "playing") continue;
-          const game: ServerGame = {
-            id: data.id,
-            gameState: data.gameState,
-            wagerAmount: data.wagerAmount,
-            status: data.status as ServerGame["status"],
-            playerWhite: null,
-            playerBlack: null,
-            spectators: [],
-            createdAt: Date.now(),
-            turnTimer: null,
-            turnTimeLimit: data.turnTimeLimit,
-            turnMoveStack: [],
-            pendingConfirmation: null,
-            disconnectTimer: null,
-            disconnectedPlayer: null,
-            disconnectedAt: null,
-            escrowStatus: data.escrowStatus as ServerGame["escrowStatus"],
-            pendingResignation: null,
-            moveTimes: [],
-            stallingWarned: false,
-            pendingDoubleDeposit: null,
-          };
-          this.games.set(game.id, game);
-          if (data.playerWhite) this.playerGames.set(data.playerWhite, game.id);
-          if (data.playerBlack) this.playerGames.set(data.playerBlack, game.id);
-          restored++;
-        }
-        logger.info(`Restored ${restored} games from PostgreSQL`);
-        return restored;
+    await expireOrphanWaitingGames();
+    const activeGames = await loadActiveGames();
+    let restored = 0;
+    for (const data of activeGames) {
+      const state = data.serverState;
+      let cashRules: CashGameRules | undefined;
+      if (data.escrowStatus === "active") cashRules = parseCashGameRules(state.cashRules);
+      if (!(await renewGameOwnership(data.id, this.instanceId, CASH_GAME_LEASE_SECONDS))) continue;
+      const game: ServerGame = {
+        id: data.id,
+        revision: data.revision,
+        phase: data.phase,
+        deadlineAt: data.deadlineAt?.getTime() ?? null,
+        gameState: data.gameState,
+        wagerAmount: data.wagerAmount,
+        status: data.status as ServerGame["status"],
+        playerWhite: this.detachedPlayer(data.playerWhite),
+        playerBlack: this.detachedPlayer(data.playerBlack),
+        createdAt: data.createdAt.getTime(),
+        turnTimer: null,
+        ownershipTimer: null,
+        turnTimeLimit: cashRules?.turnTimeLimitSeconds ?? data.turnTimeLimit,
+        cashRules,
+        doublingAllowed: state.doublingAllowed ?? true,
+        turnMoveStack: state.turnMoveStack ?? [],
+        pendingConfirmation: state.pendingConfirmation ?? null,
+        disconnectTimer: null,
+        disconnectedPlayer: state.disconnectedPlayer ?? null,
+        disconnectedAt: state.disconnectedAt ?? null,
+        escrowStatus: data.escrowStatus as ServerGame["escrowStatus"],
+        pendingResignation: state.pendingResignation ?? null,
+        moveTimes: [],
+        stallingWarned: false,
+        pendingMatchLength: state.pendingMatchLength ?? undefined,
+        cashQuoteId: state.cashQuoteId ?? undefined,
+        reviewReason: state.reviewReason ?? undefined,
+        pendingDoubleOffer: state.pendingDoubleOffer ?? null,
+      };
+      this.games.set(game.id, game);
+      await this.startCashSessionIfReady(game);
+      this.scheduleCashOwnershipRenewal(game);
+      if (game.status === "waiting") {
+        this.scheduleWaitingExpiry(game);
+      } else if (game.status === "playing" && game.disconnectedPlayer && game.disconnectedAt !== null) {
+        this.scheduleDisconnectGraceTimer(game, game.disconnectedPlayer, game.disconnectedAt);
+      } else if (game.status === "playing" && game.deadlineAt !== null) {
+        this.scheduleTurnTimer(game);
       }
-    } catch {
-      // PostgreSQL not available, fall back to Redis
+      restored++;
     }
-
-    // Redis fallback
-    try {
-      const { getRedis: getR } = await import("./redis.js");
-      const r = getR();
-      if (!r) return 0;
-      const keys = await r.keys("active_game:*");
-      let restored = 0;
-      for (const key of keys) {
-        try {
-          const raw = await r.get(key);
-          if (!raw) continue;
-          const data = JSON.parse(raw);
-          if (data.status !== "playing") continue;
-
-          const game: ServerGame = {
-            id: data.id,
-            gameState: data.gameState,
-            wagerAmount: data.wagerAmount,
-            status: data.status,
-            playerWhite: null,
-            playerBlack: null,
-            spectators: [],
-            createdAt: Date.now(),
-            turnTimer: null,
-            turnTimeLimit: DEFAULT_TURN_TIME_LIMIT_SEC,
-            turnMoveStack: data.turnMoveStack || [],
-            pendingConfirmation: data.pendingConfirmation || null,
-            disconnectTimer: null,
-            disconnectedPlayer: null,
-            disconnectedAt: null,
-            escrowStatus: "none",
-            pendingResignation: null,
-            moveTimes: [],
-            stallingWarned: false,
-            pendingDoubleDeposit: null,
-          };
-          this.games.set(game.id, game);
-
-          if (data.playerWhiteAddress) {
-            this.playerGames.set(data.playerWhiteAddress, game.id);
-          }
-          if (data.playerBlackAddress) {
-            this.playerGames.set(data.playerBlackAddress, game.id);
-          }
-          restored++;
-        } catch {
-          // Skip corrupted entries
-        }
-      }
-      return restored;
-    } catch {
-      return 0;
-    }
+    if (activeGames.length > 0) logger.info(`Restored ${restored} games from PostgreSQL`);
+    return restored;
   }
 
   private generateGameId(): string {
     return randomUUID();
   }
 
-  createGame(wagerAmount: number, turnTimeLimit: number = DEFAULT_TURN_TIME_LIMIT_SEC): ServerGame {
+  createGame(
+    wagerAmount: number,
+    turnTimeLimit: number = DEFAULT_TURN_TIME_LIMIT_SEC,
+    doublingAllowed = true,
+  ): ServerGame {
     const id = this.generateGameId();
     const game: ServerGame = {
       id,
+      revision: 0,
+      phase: "waiting",
+      deadlineAt: null,
       gameState: createGameState(),
       playerWhite: null,
       playerBlack: null,
-      spectators: [],
       wagerAmount,
       status: "waiting",
       createdAt: Date.now(),
       turnTimer: null,
+      ownershipTimer: null,
       turnTimeLimit,
+      doublingAllowed,
       turnMoveStack: [],
       pendingConfirmation: null,
       disconnectTimer: null,
@@ -264,11 +658,190 @@ export class GameManager {
       pendingResignation: null,
       moveTimes: [],
       stallingWarned: false,
-      pendingDoubleDeposit: null,
+      pendingDoubleOffer: null,
     };
     this.diceHistories.set(id, new GameDiceHistory());
     this.games.set(id, game);
     return game;
+  }
+  createGameWithId(id: string, turnTimeLimit: number = DEFAULT_TURN_TIME_LIMIT_SEC): ServerGame {
+    const existing = this.games.get(id);
+    if (existing) return existing;
+    const game = this.createGame(0, turnTimeLimit);
+    this.games.delete(game.id);
+    this.diceHistories.delete(game.id);
+    game.id = id;
+    this.games.set(id, game);
+    this.diceHistories.set(id, new GameDiceHistory());
+    return game;
+  }
+
+  private assignPlayer(game: ServerGame, player: PlayerConnection, deferStart = false): { color: Player } | null {
+    if (!["waiting", "depositing", "playing"].includes(game.status)) return null;
+    if (game.playerWhite?.address === player.address) {
+      game.playerWhite = player;
+      return { color: "white" };
+    }
+    if (game.playerBlack?.address === player.address) {
+      game.playerBlack = player;
+      if (!deferStart && game.status === "waiting" && game.playerWhite) {
+        game.status = "playing";
+        game.phase = "await_roll";
+        this.startTurnTimer(game);
+      }
+      return { color: "black" };
+    }
+    if (!game.playerWhite) {
+      game.playerWhite = player;
+      game.phase = "waiting";
+      game.deadlineAt = null;
+      this.playerGames.set(player.address, game.id);
+      return { color: "white" };
+    }
+    if (!game.playerBlack) {
+      game.playerBlack = player;
+      this.playerGames.set(player.address, game.id);
+      if (!deferStart) {
+        game.status = "playing";
+        game.phase = "await_roll";
+        this.startTurnTimer(game);
+      }
+      return { color: "black" };
+    }
+    return null;
+  }
+
+  private async restoreResumedCashGame(game: ServerGame): Promise<void> {
+    if (game.escrowStatus !== "active" || game.status !== "abandoned" || game.phase !== "review") return;
+    if ((await quoteForGame(game.id))?.state !== "active") return;
+    await this.ensureCashOwnership(game);
+    const recovery = await cashGameRecoveryState(game.id);
+    if (!recovery) throw new Error("CASH_GAME_RECOVERY_STATE_REQUIRED");
+    if (!["waiting", "await_roll", "playing_moves", "await_confirmation", "double_offer", "resignation_offer"].includes(recovery.phase)) {
+      throw new Error("CASH_GAME_RECOVERY_STATE_INVALID");
+    }
+    const deadlineAt = recovery.deadlineAt === null ? null : Date.parse(recovery.deadlineAt);
+    if (deadlineAt !== null && !Number.isFinite(deadlineAt)) throw new Error("CASH_GAME_RECOVERY_STATE_INVALID");
+    const expectedRevision = game.revision;
+    game.status = "playing";
+    game.phase = recovery.phase as ServerGame["phase"];
+    game.deadlineAt = deadlineAt;
+    game.reviewReason = undefined;
+    try {
+      await this.commitMutation(
+        game,
+        "system:cash-recovery",
+        {
+          commandId: `system:${game.id}:cash-recovery:${expectedRevision}`,
+          expectedRevision,
+          commandType: "cash_game_resumed",
+        },
+        "cash_game_resumed",
+        { recoveredRevision: recovery.gameRevision, phase: recovery.phase, deadlineAt: recovery.deadlineAt },
+        { resumed: true },
+      );
+    } catch (error) {
+      await this.reloadCanonicalCashGame(game, false);
+      throw error;
+    }
+    if (game.deadlineAt !== null) this.scheduleTurnTimer(game);
+  }
+
+  async joinCashGame(gameId: string, player: PlayerConnection, quoteId: string): Promise<{ color: Player } | null> {
+    return this.withGameLock(gameId, async () => {
+      const quote = await quoteForGame(gameId);
+      if (!quote || quote.id !== quoteId) return null;
+      const gate = await cashGameJoinGate(gameId, player.address);
+      if (!gate.allowed) throw new Error(gate.code ?? "CASH_GAME_PLAY_BLOCKED");
+      const activeGameId = await this.getAuthoritativePlayerGame(player.address);
+      if (activeGameId && activeGameId !== gameId) return null;
+      if (!this.games.has(gameId)) {
+        const pool = getPool();
+        if (!pool) throw new Error("DATABASE_UNAVAILABLE");
+        const connection = await pool.connect();
+        try {
+          await connection.query("BEGIN");
+          const locked = await connection.query<{ state: string }>(
+            "SELECT state FROM cash_game_quotes WHERE id = $1 AND game_id = $2 FOR UPDATE", [quoteId, gameId],
+          );
+          if (locked.rows[0]?.state !== "active") throw new Error("CASH_GAME_NOT_ACTIVE");
+          const existing = await connection.query("SELECT id FROM games WHERE id = $1", [gameId]);
+          if (!existing.rowCount) await reserveWaitingGame(connection, {
+            id: gameId, playerWhite: quote.playerA, playerBlack: quote.playerB,
+            turnTimeLimit: parseCashGameRules(quote.rules).turnTimeLimitSeconds,
+            doublingAllowed: true, ownerInstanceId: this.instanceId,
+          });
+          await connection.query("COMMIT");
+        } catch (error) {
+          await connection.query("ROLLBACK");
+          throw error;
+        } finally {
+          connection.release();
+        }
+      }
+      let game = this.games.get(gameId);
+      if (!game) game = (await this.hydrateParticipantGame(gameId, player.address)) ?? undefined;
+      if (!game && !(await renewGameOwnership(gameId, this.instanceId, CASH_GAME_LEASE_SECONDS))) {
+        throw new Error("GAME_OWNERSHIP_LOST");
+      }
+      const existed = Boolean(game);
+      game ??= this.createGameWithId(gameId, parseCashGameRules(quote.rules).turnTimeLimitSeconds);
+      await this.ensureCashOwnership(game);
+      const cashRules = parseCashGameRules(quote.rules);
+      await this.restoreResumedCashGame(game);
+      if (!["waiting", "depositing", "playing"].includes(game.status)) return null;
+      if (game.cashQuoteId && game.cashQuoteId !== quoteId) return null;
+      const previous = {
+        playerWhite: game.playerWhite,
+        playerBlack: game.playerBlack,
+        status: game.status,
+        escrowStatus: game.escrowStatus,
+        phase: game.phase,
+        deadlineAt: game.deadlineAt,
+        cashQuoteId: game.cashQuoteId,
+        cashRules: game.cashRules,
+        turnTimeLimit: game.turnTimeLimit,
+        revision: game.revision,
+      };
+      game.escrowStatus = "active";
+      game.cashQuoteId = quoteId;
+      game.cashRules = cashRules;
+      game.turnTimeLimit = cashRules.turnTimeLimitSeconds;
+      const result = this.assignPlayer(game, player, true);
+      if (!result) {
+        Object.assign(game, previous);
+        return null;
+      }
+      if (game.status === "waiting" && game.playerWhite?.ws.readyState === 1 && game.playerBlack?.ws.readyState === 1) {
+        game.status = "playing";
+        game.phase = "await_roll";
+        this.startTurnTimer(game);
+      }
+      if (existed && (
+        previous.playerWhite?.address !== game.playerWhite?.address ||
+        previous.playerBlack?.address !== game.playerBlack?.address ||
+        previous.escrowStatus !== game.escrowStatus ||
+        previous.status !== game.status ||
+        previous.phase !== game.phase ||
+        previous.cashQuoteId !== game.cashQuoteId
+      )) game.revision++;
+      const persisted = await this.persistGame(game);
+      if (!persisted) {
+        if (await this.reloadCanonicalCashGame(game)) throw new CanonicalGameReloadedError();
+        this.relinquishCashOwnership(game);
+        Object.assign(game, previous);
+        this.playerGames.delete(player.address);
+        if (!existed) {
+          this.games.delete(gameId);
+          this.diceHistories.delete(gameId);
+        }
+        throw new Error("CASH_GAME_PERSISTENCE_FAILED");
+      }
+      await this.startCashSessionIfReady(game);
+      this.scheduleCashOwnershipRenewal(game);
+      if (game.status === "waiting") this.scheduleWaitingExpiry(game);
+      return result;
+    });
   }
 
   getGame(id: string): ServerGame | undefined {
@@ -279,69 +852,178 @@ export class GameManager {
     return this.playerGames.get(address);
   }
 
-  joinGame(gameId: string, player: PlayerConnection): { color: Player } | null {
-    const game = this.games.get(gameId);
-    if (!game) return null;
-
-    if (!game.playerWhite) {
-      game.playerWhite = player;
-      this.playerGames.set(player.address, gameId);
-      return { color: "white" };
-    } else if (!game.playerBlack && game.playerWhite.address !== player.address) {
-      game.playerBlack = player;
-      this.playerGames.set(player.address, gameId);
-      game.status = "playing";
-      return { color: "black" };
+  async getAuthoritativePlayerGame(address: string): Promise<string | undefined> {
+    const local = this.playerGames.get(address);
+    if (local) {
+      const game = this.games.get(local);
+      if (game && ["waiting", "depositing", "playing"].includes(game.status)) return local;
+      this.playerGames.delete(address);
     }
-    return null;
+    return (await loadCurrentGameForParticipant(address))?.id;
   }
 
-  async rollDiceLocked(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
-    return this.withGameLock(gameId, () => this.rollDice(gameId, playerAddress));
+  async joinGame(gameId: string, player: PlayerConnection): Promise<{ color: Player } | null> {
+    return this.withGameLock(gameId, async () => {
+      const activeGameId = await this.getAuthoritativePlayerGame(player.address);
+      if (activeGameId && activeGameId !== gameId) return null;
+      const game = this.games.get(gameId);
+      if (!game || !["waiting", "depositing", "playing"].includes(game.status)) return null;
+      await this.ensureCashOwnership(game);
+      const playerWasAssigned = game.playerWhite?.address === player.address || game.playerBlack?.address === player.address;
+      const hadParticipant = game.playerWhite !== null || game.playerBlack !== null;
+      const priorStatus = game.status;
+      const priorPhase = game.phase;
+      const result = this.assignPlayer(game, player);
+      if (!result) return null;
+      if (
+        (!playerWasAssigned && hadParticipant) ||
+        game.status !== priorStatus ||
+        game.phase !== priorPhase
+      ) game.revision++;
+      if (!(await this.persistGame(game))) {
+        if (await this.reloadCanonicalCashGame(game)) throw new CanonicalGameReloadedError();
+        throw new Error("GAME_PERSISTENCE_FAILED");
+      }
+      if (game.status === "waiting") this.scheduleWaitingExpiry(game);
+      return result;
+    });
   }
 
-  async rollDice(gameId: string, playerAddress: string): Promise<{ dice: [number, number]; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
+  async rollDiceLocked(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ dice: [number, number]; player: Player; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
+    return this.withGameLock(gameId, () => this.rollDice(gameId, playerAddress, command));
+  }
+
+  async rollDice(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ dice: [number, number]; player: Player; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean } | null> {
+    const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+    if (replayed !== undefined) return replayed as { dice: [number, number]; player: Player; gameState: GameState; legalMoves: Move[]; drandProof?: { round: number; randomness: string; signature: string }; drandFailed?: boolean };
     const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    if (game.gameState.dice !== null) return null; // already rolled
+    if (!game || game.status !== "playing" || game.phase !== "await_roll") return null;
+    if (game.gameState.dice !== null) return null;
+    await this.ensureCashOwnership(game);
+    if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+    if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
 
-    // Verify it's this player's turn
     const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor || playerColor !== game.gameState.currentPlayer) return null;
+    const openingRoll = game.gameState.turnNumber === 0 && game.gameState.moveHistory.length === 0;
+    if (!playerColor || (!openingRoll && playerColor !== game.gameState.currentPlayer)) return null;
 
     game.turnMoveStack = [];
 
     const diceHistory = this.diceHistories.get(gameId);
-    const turnNumber = game.gameState.turnNumber + 1; // setDice increments turnNumber
+    const turnNumber = game.gameState.turnNumber + 1;
     const whiteAddr = game.playerWhite?.address || "";
     const blackAddr = game.playerBlack?.address || "";
+    const proofContext = {
+      drandChainHash: DRAND_CHAIN_HASH,
+      gameId,
+      cashQuoteId: game.cashQuoteId ?? null,
+      playerWhite: whiteAddr,
+      playerBlack: blackAddr,
+      roller: playerColor,
+      turnNumber,
+      rulesVersion: game.escrowStatus === "active" ? this.cashRulesFor(game).version : "free-v1",
+      openingRoll,
+    } as const;
 
     let die1: number;
     let die2: number;
+    let fullProof: DrandDiceProof | undefined;
     let drandProof: { round: number; randomness: string; signature: string } | undefined;
 
     try {
-      // Fetch latest drand beacon and derive dice
-      const beacon = await latestBeacon();
-      const proof = createDiceProof(beacon, whiteAddr, blackAddr, turnNumber);
-      die1 = proof.dice[0];
-      die2 = proof.dice[1];
-      drandProof = { round: proof.drandRound, randomness: proof.drandRandomness, signature: proof.drandSignature };
-
-      if (diceHistory) {
-        diceHistory.addProof(proof);
+      const latest = await latestBeacon();
+      const proposedRound = latest.round + 2;
+      const proposedContext = diceCommitmentContext({
+        ...proofContext,
+        drandRound: proposedRound,
+      });
+      const commitment = await persistFutureRoundCommitment({
+        gameId,
+        turnNumber,
+        player: playerColor,
+        proposedRound,
+        contextHex: proposedContext,
+        commitHash: proposedContext,
+      });
+      if (!commitment) {
+        if (game.escrowStatus === "active") throw new Error("DURABLE_DICE_COMMITMENT_REQUIRED");
+        const proof = createDiceProof(latest, proofContext);
+        die1 = proof.dice[0];
+        die2 = proof.dice[1];
+        fullProof = proof;
+        drandProof = { round: proof.drandRound, randomness: proof.drandRandomness, signature: proof.drandSignature };
+      } else {
+        const expectedContext = diceCommitmentContext({
+          ...proofContext,
+          drandRound: commitment.round,
+        });
+        if (commitment.contextHex !== expectedContext) throw new Error("DICE_COMMITMENT_CONTEXT_MISMATCH");
+        this.broadcastToGame(game, {
+          type: "dice_commit",
+          game_id: gameId,
+          commit_hash: commitment.commitHash,
+          turn_number: turnNumber,
+        });
+        const beacon = await fetchFutureBeacon(commitment.round);
+        const proof = createDiceProof(beacon, proofContext);
+        die1 = proof.dice[0];
+        die2 = proof.dice[1];
+        fullProof = proof;
+        drandProof = { round: proof.drandRound, randomness: proof.drandRandomness, signature: proof.drandSignature };
+        const revealed = await revealCommittedDice({
+          gameId,
+          turnNumber,
+          player: playerColor,
+          round: commitment.round,
+          contextHex: commitment.contextHex,
+          die1,
+          die2,
+          randomness: proof.drandRandomness,
+          signature: proof.drandSignature,
+          proof,
+        });
+        if (!revealed) throw new Error("DICE_REVEAL_PERSISTENCE_FAILED");
       }
+      if (diceHistory && fullProof) diceHistory.addProof(fullProof);
     } catch (err) {
-      // Fallback to CSPRNG if drand is unreachable — flag as unverifiable
-      console.warn("[Dice] drand unavailable, falling back to CSPRNG:", err);
+      if (game.escrowStatus === "active") {
+        await this.pauseCashGameForReview(game, "proof_unavailable", game.deadlineAt ?? Date.now());
+        throw new Error("CASH_GAME_REVIEW");
+      }
+      logger.warn("Drand unavailable; using unverifiable free-play dice", {
+        gameId,
+        errorCode: err instanceof Error ? err.name : "unknown",
+      });
       die1 = randomInt(1, 7);
       die2 = randomInt(1, 7);
+      if (openingRoll) {
+        while (die1 === die2) {
+          die1 = randomInt(1, 7);
+          die2 = randomInt(1, 7);
+        }
+      }
       drandProof = undefined;
     }
 
     const drandFailed = !drandProof;
 
-    game.gameState = setDice(game.gameState, die1, die2);
+    if (openingRoll) {
+      const opened = setOpeningRoll(game.gameState, die1, die2);
+      if (!opened) throw new Error("OPENING_ROLL_TIE");
+      game.gameState = opened;
+    } else {
+      game.gameState = setDice(game.gameState, die1, die2);
+    }
+    const rolledPlayer = game.gameState.currentPlayer;
+    game.phase = "playing_moves";
 
     const legalMoves = getLegalFirstMoves(
       game.gameState.board,
@@ -352,28 +1034,54 @@ export class GameManager {
     // Start turn timer — player must always confirm, even with no legal moves
     this.startTurnTimer(game);
 
-    void this.persistGame(game);
-    void this.persistDiceRoll(gameId, turnNumber, playerColor, die1, die2, drandProof, drandFailed);
+    await this.commitMutation(
+      game,
+      playerAddress,
+      command,
+      "dice_rolled",
+      { turnNumber, die1, die2, openingRoll, roller: playerColor, activePlayer: rolledPlayer, drandRound: drandProof?.round ?? null },
+      { dice: [die1, die2], player: rolledPlayer, gameState: game.gameState, legalMoves, drandProof, drandFailed },
+    );
+    if (!drandProof) {
+      await this.persistDiceRoll(gameId, turnNumber, playerColor, die1, die2, undefined, true);
+    }
 
-    return { dice: [die1, die2], gameState: game.gameState, legalMoves, drandProof, drandFailed };
+    return { dice: [die1, die2], player: rolledPlayer, gameState: game.gameState, legalMoves, drandProof, drandFailed };
   }
 
-  async applyMoveLocked(gameId: string, playerAddress: string, from: number, to: number): Promise<{ move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null> {
-    return this.withGameLock(gameId, () => this.applyMove(gameId, playerAddress, from, to));
+  async applyMoveLocked(
+    gameId: string,
+    playerAddress: string,
+    from: number,
+    to: number,
+    command?: MutationCommand,
+  ): Promise<{ move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null> {
+    return this.withGameLock(gameId, () => this.applyMove(gameId, playerAddress, from, to, command));
   }
 
-  applyMove(gameId: string, playerAddress: string, from: number, to: number): { move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null {
+  async applyMove(
+    gameId: string,
+    playerAddress: string,
+    from: number,
+    to: number,
+    command?: MutationCommand,
+  ): Promise<{ move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean } | null> {
+    const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+    if (replayed !== undefined) return replayed as { move: Move; playerColor: Player; gameState: GameState; legalMoves: Move[]; turnAutoEnded: boolean };
     const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
+    if (!game || game.status !== "playing" || !["playing_moves", "await_confirmation"].includes(game.phase)) return null;
+    await this.ensureCashOwnership(game);
+    if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+    if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
 
     const playerColor = this.getPlayerColor(game, playerAddress);
     // Allow moves when it's the player's turn OR when they have pendingConfirmation (undo then re-move)
     if (!playerColor || (playerColor !== game.gameState.currentPlayer && game.pendingConfirmation !== playerAddress)) return null;
     if (game.gameState.dice === null) return null;
 
-    game.turnMoveStack.push(JSON.parse(JSON.stringify(game.gameState)));
     const newState = makeMove(game.gameState, from, to);
     if (!newState) return null;
+    game.turnMoveStack.push(structuredClone(game.gameState));
 
     // Find which die was used
     const usedDieValues = game.gameState.movesRemaining.filter(
@@ -385,10 +1093,6 @@ export class GameManager {
     const move: Move = { from, to, die };
     game.gameState = newState;
 
-    // Persist move to PostgreSQL for audit trail
-    void this.persistMoveRecord(gameId, game.gameState.turnNumber, playerColor!, from, to, newState);
-
-    // Get remaining legal moves
     const legalMoves = newState.movesRemaining.length > 0
       ? getLegalFirstMoves(newState.board, newState.currentPlayer, newState.movesRemaining)
       : [];
@@ -397,36 +1101,71 @@ export class GameManager {
     if (newState.gameOver) {
       game.status = "finished";
       this.clearTurnTimer(game);
-      void this.deletePersistedGame(gameId);
+      game.phase = "terminal";
     }
 
     // If turn auto-ended (currentPlayer changed), set pending confirmation
     const turnAutoEnded = newState.currentPlayer !== playerColor && !newState.gameOver;
     if (turnAutoEnded) {
       game.pendingConfirmation = playerAddress;
-      // Don't clear timer — let it run for confirmation timeout
+      game.phase = "await_confirmation";
+    } else if (!newState.gameOver) {
+      game.phase = "playing_moves";
     }
 
-    void this.persistGame(game);
+    const result = { move, playerColor, gameState: game.gameState, legalMoves, turnAutoEnded };
+    await this.commitMutation(
+      game,
+      playerAddress,
+      command,
+      "move_made",
+      { from, to, die, turnNumber: game.gameState.turnNumber },
+      result,
+    );
+    if (newState.gameOver) await this.deletePersistedGame(gameId);
 
-    return { move, playerColor: playerColor!, gameState: game.gameState, legalMoves, turnAutoEnded };
+    if (game.escrowStatus !== "active") {
+      await this.persistMoveRecord(gameId, game.gameState.turnNumber, playerColor, from, to, newState);
+    }
+    return result;
   }
 
-  async handleEndTurnLocked(gameId: string, playerAddress: string): Promise<GameState | null> {
-    return this.withGameLock(gameId, () => this.handleEndTurn(gameId, playerAddress));
+  async handleEndTurnLocked(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<GameState | null> {
+    return this.withGameLock(gameId, () => this.handleEndTurn(gameId, playerAddress, command));
   }
 
-  handleEndTurn(gameId: string, playerAddress: string): GameState | null {
+  async handleEndTurn(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<GameState | null> {
+    const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+    if (replayed !== undefined) return replayed as GameState;
     const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
+    if (!game || game.status !== "playing" || !["playing_moves", "await_confirmation"].includes(game.phase)) return null;
+    await this.ensureCashOwnership(game);
+    if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+    if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
 
     // Handle pendingConfirmation: player confirms the auto-ended turn
-    if (game.pendingConfirmation === playerAddress) {
+    if (game.phase === "await_confirmation" && game.pendingConfirmation === playerAddress) {
       game.pendingConfirmation = null;
       game.turnMoveStack = [];
+      game.phase = "await_roll";
       // Start timer for next player's roll phase (will be reset when they roll)
       this.startTurnTimer(game);
-      void this.persistGame(game);
+      await this.commitMutation(
+        game,
+        playerAddress,
+        command,
+        "turn_confirmed",
+        { turnNumber: game.gameState.turnNumber },
+        game.gameState,
+      );
       return game.gameState;
     }
 
@@ -438,21 +1177,42 @@ export class GameManager {
 
     game.turnMoveStack = [];
     game.gameState = endTurn(game.gameState);
+    game.phase = "await_roll";
     // Start timer for next player's roll phase (will be reset when they roll)
     this.startTurnTimer(game);
 
-    void this.persistGame(game);
+    await this.commitMutation(
+      game,
+      playerAddress,
+      command,
+      "turn_ended",
+      { turnNumber: game.gameState.turnNumber },
+      game.gameState,
+    );
 
     return game.gameState;
   }
 
-  async handleUndoLocked(gameId: string, playerAddress: string): Promise<{ gameState: GameState; legalMoves: Move[] } | null> {
-    return this.withGameLock(gameId, () => this.handleUndo(gameId, playerAddress));
+  async handleUndoLocked(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ gameState: GameState; legalMoves: Move[] } | null> {
+    return this.withGameLock(gameId, () => this.handleUndo(gameId, playerAddress, command));
   }
 
-  handleUndo(gameId: string, playerAddress: string): { gameState: GameState; legalMoves: Move[] } | null {
+  async handleUndo(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ gameState: GameState; legalMoves: Move[] } | null> {
+    const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+    if (replayed !== undefined) return replayed as { gameState: GameState; legalMoves: Move[] };
     const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
+    if (!game || game.status !== "playing" || !["playing_moves", "await_confirmation"].includes(game.phase)) return null;
+    await this.ensureCashOwnership(game);
+    if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+    if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
 
     const playerColor = this.getPlayerColor(game, playerAddress);
     if (!playerColor) return null;
@@ -467,17 +1227,24 @@ export class GameManager {
     // Clear pendingConfirmation if restored state's currentPlayer matches the player
     if (isPending && game.gameState.currentPlayer === playerColor) {
       game.pendingConfirmation = null;
+      game.phase = "playing_moves";
     }
 
     const legalMoves = getLegalFirstMoves(
       game.gameState.board,
       game.gameState.currentPlayer,
-      game.gameState.movesRemaining
+      game.gameState.movesRemaining,
     );
-
-    void this.persistGame(game);
-
-    return { gameState: game.gameState, legalMoves };
+    const result = { gameState: game.gameState, legalMoves };
+    await this.commitMutation(
+      game,
+      playerAddress,
+      command,
+      "move_undone",
+      {},
+      result,
+    );
+    return result;
   }
 
   handleDisconnect(address: string): { gameId: string; game: ServerGame } | null {
@@ -490,23 +1257,38 @@ export class GameManager {
     return { gameId, game };
   }
 
-  handleReconnect(gameId: string, player: PlayerConnection): boolean {
-    const game = this.games.get(gameId);
+  async handleReconnect(gameId: string, player: PlayerConnection): Promise<boolean> {
+    let game = this.games.get(gameId);
+    if (!game) game = (await this.hydrateParticipantGame(gameId, player.address)) ?? undefined;
     if (!game) return false;
-
-    if (game.playerWhite?.address === player.address) {
-      game.playerWhite = player;
+    return this.withGameLock(gameId, async () => {
+      await this.ensureCashOwnership(game!);
+      if (game!.playerWhite?.address === player.address) game!.playerWhite = player;
+      else if (game!.playerBlack?.address === player.address) game!.playerBlack = player;
+      else return false;
+      this.playerGames.set(player.address, gameId);
+      if (game!.escrowStatus === "active") {
+        await this.restoreResumedCashGame(game!);
+        await this.startCashSessionIfReady(game!);
+      }
+      if (game!.disconnectedPlayer !== player.address) return true;
+      const expectedRevision = game!.revision;
+      this.cancelDisconnectGracePeriod(game!);
+      await this.commitMutation(
+        game!,
+        player.address,
+        this.systemCommand(game!, "player_reconnected", `${player.address}:${expectedRevision}`),
+        "player_reconnected",
+        { player: player.address },
+        { reconnected: true },
+      );
+      if (game!.status === "playing" && game!.deadlineAt !== null) this.scheduleTurnTimer(game!);
       return true;
-    }
-    if (game.playerBlack?.address === player.address) {
-      game.playerBlack = player;
-      return true;
-    }
-    return false;
+    });
   }
 
   /** Update a player's WebSocket to the one that sent a game message. */
-  updatePlayerWs(gameId: string, address: string, ws: import("ws").WebSocket): void {
+  updatePlayerWs(gameId: string, address: string, ws: WebSocket): void {
     const game = this.games.get(gameId);
     if (!game) return;
     if (game.playerWhite?.address === address && game.playerWhite.ws !== ws) {
@@ -517,308 +1299,243 @@ export class GameManager {
     }
   }
 
+  private detachGame(game: ServerGame): void {
+    this.relinquishCashOwnership(game);
+    if (game.playerWhite && this.playerGames.get(game.playerWhite.address) === game.id) {
+      this.playerGames.delete(game.playerWhite.address);
+    }
+    if (game.playerBlack && this.playerGames.get(game.playerBlack.address) === game.id) {
+      this.playerGames.delete(game.playerBlack.address);
+    }
+    this.games.delete(game.id);
+    this.diceHistories.delete(game.id);
+    this.gameLocks.delete(game.id);
+  }
+
+  releaseTerminalGame(gameId: string): void {
+    const game = this.games.get(gameId);
+    if (game && ["finished", "abandoned"].includes(game.status)) this.detachGame(game);
+  }
+
   removeGame(gameId: string): void {
     const game = this.games.get(gameId);
-    if (game) {
-      this.clearTurnTimer(game);
-      this.clearDoubleDepositTimer(game);
-      if (game.playerWhite) this.playerGames.delete(game.playerWhite.address);
-      if (game.playerBlack) this.playerGames.delete(game.playerBlack.address);
-      this.games.delete(gameId);
-      this.diceHistories.delete(gameId);
-      this.gameLocks.delete(gameId);
-      void this.deletePersistedGame(gameId);
-    }
+    if (!game) return;
+    void this.deletePersistedGame(gameId);
+    this.detachGame(game);
+  }
+
+  discardUnjoinedGame(gameId: string): void {
+    const game = this.games.get(gameId);
+    if (game?.status === "waiting" && !game.playerWhite && !game.playerBlack) this.detachGame(game);
   }
 
   // ── Doubling Cube ─────────────────────────────────────────────
 
-  handleOfferDouble(gameId: string, playerAddress: string): { player: Player; cubeValue: number } | null {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-    if (!canDouble(game.gameState, playerColor)) return null;
-    return { player: playerColor, cubeValue: game.gameState.cubeValue * 2 };
-  }
-
-  /** Accept double for free games (no wager). Mutates game state immediately. */
-  handleAcceptDoubleFree(gameId: string, playerAddress: string): { cubeValue: number; cubeOwner: Player } | null {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-    game.gameState = acceptDouble(game.gameState, playerColor);
-    void this.persistGame(game);
-    return { cubeValue: game.gameState.cubeValue, cubeOwner: game.gameState.cubeOwner! };
-  }
-
-  /** Accept double for wagered games — initiates escrow deposit flow.
-   *  Returns info needed to start the deposit process. */
-  async handleAcceptDoubleWagered(
+  async handleOfferDouble(
     gameId: string,
     playerAddress: string,
-  ): Promise<{
-    cubeValue: number;
-    cubeOwner: Player;
-    additionalDeposit: string;
-    doubler: string;
-    responder: string;
-  } | null> {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-
-    const newCubeValue = game.gameState.cubeValue * 2;
-    const doublerColor: Player = playerColor === "white" ? "black" : "white";
-    const doublerAddress = doublerColor === "white"
-      ? game.playerWhite?.address
-      : game.playerBlack?.address;
-
-    if (!doublerAddress) return null;
-
-    // Transition to AwaitingDoubleDeposits via balance service
-    if (!this.balanceService) return null;
-
-    const success = await this.balanceService.offerDouble(gameId, doublerAddress, newCubeValue);
-    if (!success) return null;
-
-    // Calculate additional deposit: old_cube * wager
-    const additionalDeposit = String(game.gameState.cubeValue * game.wagerAmount);
-
-    // Track pending double deposit on the game
-    game.pendingDoubleDeposit = {
-      doubler: doublerAddress,
-      responder: playerAddress,
-      newCubeValue,
-      additionalDeposit,
-      doublerDeposited: false,
-      responderDeposited: false,
-      depositTimer: null,
-    };
-    game.escrowStatus = "awaiting_double_deposits";
-
-    void this.persistGame(game);
-
-    return {
-      cubeValue: newCubeValue,
-      cubeOwner: playerColor,
-      additionalDeposit,
-      doubler: doublerAddress,
-      responder: playerAddress,
-    };
-  }
-
-  /** Verify a double deposit and update tracking. Returns deposit status. */
-  async verifyDoubleDeposit(
-    gameId: string,
-    playerAddress: string,
-  ): Promise<{ depositsComplete: boolean; playerDeposited: boolean } | null> {
-    const game = this.games.get(gameId);
-    if (!game || !game.pendingDoubleDeposit) return null;
-
-    const pending = game.pendingDoubleDeposit;
-    if (playerAddress !== pending.doubler && playerAddress !== pending.responder) return null;
-
-    // Verify deposit via balance service
-    if (!this.balanceService) return null;
-
-    const depositStatus = await this.balanceService.verifyDoubleDeposit(gameId);
-    if (!depositStatus) return null;
-
-    // Update our tracking based on balance service state
-    pending.doublerDeposited = depositStatus.doublerDeposited;
-    pending.responderDeposited = depositStatus.responderDeposited;
-
-    const depositsComplete = pending.doublerDeposited && pending.responderDeposited;
-
-    if (depositsComplete) {
-      // Update game state with the accepted double
-      const accepterColor = this.getPlayerColor(game, pending.responder);
-      if (accepterColor) {
-        game.gameState = acceptDouble(game.gameState, accepterColor);
-      }
-      // Clean up pending state
-      this.clearDoubleDepositTimer(game);
-      game.pendingDoubleDeposit = null;
-      game.escrowStatus = "active";
-      void this.persistGame(game);
-    }
-
-    return {
-      depositsComplete,
-      playerDeposited: playerAddress === pending.doubler
-        ? pending.doublerDeposited
-        : pending.responderDeposited,
-    };
-  }
-
-  /** Start a timer for double deposit timeout (120s). */
-  startDoubleDepositTimer(
-    game: ServerGame,
-    onTimeout: (gameId: string) => void,
-  ): void {
-    this.clearDoubleDepositTimer(game);
-    if (!game.pendingDoubleDeposit) return;
-
-    game.pendingDoubleDeposit.depositTimer = setTimeout(() => {
-      if (game.pendingDoubleDeposit) {
-        onTimeout(game.id);
-      }
-    }, DOUBLE_DEPOSIT_TIMEOUT_MS); // 120 seconds
-  }
-
-  /** Handle double deposit timeout — cancel pending double, refund deposits. */
-  async handleDoubleDepositTimeout(gameId: string): Promise<void> {
-    const game = this.games.get(gameId);
-    if (!game || !game.pendingDoubleDeposit) return;
-
-    // Cancel the pending double via balance service (refunds happen automatically)
-    if (this.balanceService) {
-      await this.balanceService.cancelFunds(gameId);
-    }
-
-    this.clearDoubleDepositTimer(game);
-    game.pendingDoubleDeposit = null;
-    game.escrowStatus = "cancelled";
-
-    this.broadcastToGame(game, {
-      type: "double_deposit_timeout" as any,
-      game_id: gameId,
-      message: "Double deposit timed out. Reverting to pre-double state.",
+    command?: MutationCommand,
+  ): Promise<{ player: Player; cubeValue: number; deadlineAt: number; offerRevision: number } | null> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as { player: Player; cubeValue: number; deadlineAt: number; offerRevision: number };
+      const game = this.games.get(gameId);
+      if (!game || !game.doublingAllowed || game.status !== "playing" || game.phase !== "await_roll" || game.pendingDoubleOffer || game.gameState.turnNumber === 0) return null;
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const playerColor = this.getPlayerColor(game, playerAddress);
+      if (!playerColor || !canDouble(game.gameState, playerColor)) return null;
+      const cubeValue = game.gameState.cubeValue * 2;
+      if (cubeValue !== 2 && cubeValue !== 4 && cubeValue !== 8) return null;
+      const offeredAt = Date.now();
+      const deadlineAt = offeredAt + this.cashRulesFor(game).doubleResponseSeconds * 1000;
+      const offerRevision = game.revision + 1;
+      game.pendingDoubleOffer = { doubler: playerAddress, offeredCube: cubeValue, offeredAt, deadlineAt, offerRevision };
+      game.phase = "double_offer";
+      this.clearTurnTimer(game);
+      game.deadlineAt = deadlineAt;
+      this.scheduleTurnTimer(game);
+      const result = { player: playerColor, cubeValue, deadlineAt, offerRevision };
+      await this.commitMutation(game, playerAddress, command, "double_offered", { cubeValue, deadlineAt, offerRevision }, result);
+      return result;
     });
-
-    void this.persistGame(game);
   }
 
-  private clearDoubleDepositTimer(game: ServerGame): void {
-    if (game.pendingDoubleDeposit?.depositTimer) {
-      clearTimeout(game.pendingDoubleDeposit.depositTimer);
-      game.pendingDoubleDeposit.depositTimer = null;
-    }
+  async handleAcceptDoubleFree(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ cubeValue: number; cubeOwner: Player } | null> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as { cubeValue: number; cubeOwner: Player };
+      const game = this.games.get(gameId);
+      const offer = game?.pendingDoubleOffer;
+      if (!game || game.status !== "playing" || game.phase !== "double_offer" || !offer || offer.doubler === playerAddress) return null;
+      if (Date.now() > offer.deadlineAt) {
+        if (game.escrowStatus === "active") await this.pauseCashGameForReview(game, "double_response_timeout", offer.deadlineAt);
+        return null;
+      }
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const playerColor = this.getPlayerColor(game, playerAddress);
+      if (!playerColor) return null;
+      game.gameState = acceptDouble(game.gameState, playerColor);
+      game.pendingDoubleOffer = null;
+      game.phase = "await_roll";
+      this.startTurnTimer(game);
+      const result = { cubeValue: game.gameState.cubeValue, cubeOwner: game.gameState.cubeOwner! };
+      await this.commitMutation(game, playerAddress, command, "double_accepted", result, result);
+      return result;
+    });
   }
 
-  handleRejectDouble(gameId: string, playerAddress: string): { winner: Player } | null {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-    const result = rejectDouble(game.gameState, playerColor);
-    game.gameState = result.state;
-    game.status = "finished";
-    this.clearTurnTimer(game);
-    void this.deletePersistedGame(gameId);
-    return { winner: result.winner };
+
+  async handleRejectDouble(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ winner: Player } | null> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as { winner: Player };
+      const game = this.games.get(gameId);
+      const offer = game?.pendingDoubleOffer;
+      if (!game || game.status !== "playing" || game.phase !== "double_offer" || !offer || offer.doubler === playerAddress) return null;
+      if (Date.now() > offer.deadlineAt) {
+        if (game.escrowStatus === "active") await this.pauseCashGameForReview(game, "double_response_timeout", offer.deadlineAt);
+        return null;
+      }
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const playerColor = this.getPlayerColor(game, playerAddress);
+      if (!playerColor) return null;
+      const rejected = rejectDouble(game.gameState, playerColor);
+      game.gameState = rejected.state;
+      game.status = "finished";
+      game.pendingDoubleOffer = null;
+      game.phase = "terminal";
+      this.clearTurnTimer(game);
+      const result = { winner: rejected.winner };
+      await this.commitMutation(game, playerAddress, command, "double_rejected", result, result);
+      await this.deletePersistedGame(gameId);
+      return result;
+    });
   }
 
-  /** Reject double for wagered games — settles escrow to doubler. */
-  async handleRejectDoubleWagered(gameId: string, playerAddress: string): Promise<{ winner: Player } | null> {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-
-    // Reject double via balance service: rejecter forfeits, doubler gets pot
-    if (this.balanceService) {
-      await this.balanceService.rejectDouble(gameId, playerAddress);
-    }
-
-    const result = rejectDouble(game.gameState, playerColor);
-    game.gameState = result.state;
-    game.status = "finished";
-    game.escrowStatus = "forfeited";
-    this.clearTurnTimer(game);
-    this.clearDoubleDepositTimer(game);
-    game.pendingDoubleDeposit = null;
-    void this.deletePersistedGame(gameId);
-    return { winner: result.winner };
-  }
 
   // ── Typed Resignation ─────────────────────────────────────────
 
-  handleResignationTyped(
+  async handleResignationTyped(
     gameId: string,
     playerAddress: string,
     resignType: "normal" | "gammon" | "backgammon" = "normal",
-  ): { offered: boolean; winner?: Player; loser?: Player; resignType: string } | null {
-    const game = this.games.get(gameId);
-    if (!game || game.status !== "playing") return null;
-    const playerColor = this.getPlayerColor(game, playerAddress);
-    if (!playerColor) return null;
-
-    // If resign type is not "normal", offer it for opponent to accept/reject
-    if (resignType !== "normal") {
-      game.pendingResignation = { player: playerAddress, resignType };
-      return { offered: true, resignType };
-    }
-
-    // Normal resignation — immediate
-    const winner: Player = playerColor === "white" ? "black" : "white";
-    game.status = "finished";
-    game.gameState = { ...game.gameState, gameOver: true, winner, resultType: "normal" };
-    this.clearTurnTimer(game);
-    void this.deletePersistedGame(gameId);
-    return { offered: false, winner, loser: playerColor, resignType: "normal" };
+    command?: MutationCommand,
+  ): Promise<{ offered: boolean; winner?: Player; loser?: Player; resignType: string; deadlineAt?: number; offerRevision?: number } | null> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as { offered: boolean; winner?: Player; loser?: Player; resignType: string; deadlineAt?: number; offerRevision?: number };
+      const game = this.games.get(gameId);
+      if (!game || game.status !== "playing" || !["await_roll", "playing_moves", "await_confirmation"].includes(game.phase) || game.pendingResignation) return null;
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const playerColor = this.getPlayerColor(game, playerAddress);
+      if (!playerColor) return null;
+      if (playerColor !== game.gameState.currentPlayer && game.pendingConfirmation !== playerAddress) return null;
+      if (resignType !== "normal") {
+        const previousPhase = game.phase as "await_roll" | "playing_moves" | "await_confirmation";
+        const offeredAt = Date.now();
+        const previousDeadlineAt = game.deadlineAt ?? offeredAt;
+        const deadlineAt = offeredAt + this.cashRulesFor(game).resignationResponseSeconds * 1000;
+        const offerRevision = game.revision + 1;
+        game.pendingResignation = { player: playerAddress, resignType, previousPhase, previousDeadlineAt, offeredAt, deadlineAt, offerRevision };
+        game.phase = "resignation_offer";
+        this.clearTurnTimer(game);
+        game.deadlineAt = deadlineAt;
+        this.scheduleTurnTimer(game);
+        const result = { offered: true, resignType, deadlineAt, offerRevision };
+        await this.commitMutation(game, playerAddress, command, "resignation_offered", { resignType, deadlineAt, offerRevision }, result);
+        return result;
+      }
+      const winner: Player = playerColor === "white" ? "black" : "white";
+      game.status = "finished";
+      game.gameState = { ...game.gameState, gameOver: true, winner, resultType: "normal" };
+      game.phase = "terminal";
+      this.clearTurnTimer(game);
+      const result = { offered: false, winner, loser: playerColor, resignType: "normal" };
+      await this.commitMutation(game, playerAddress, command, "resigned", { resultType: "normal" }, result);
+      await this.deletePersistedGame(gameId);
+      return result;
+    });
   }
 
-  handleAcceptResignation(gameId: string, playerAddress: string): { winner: Player; resultType: ResultType } | null {
-    const game = this.games.get(gameId);
-    if (!game || !game.pendingResignation) return null;
-    const resigningColor = this.getPlayerColor(game, game.pendingResignation.player);
-    const acceptingColor = this.getPlayerColor(game, playerAddress);
-    if (!resigningColor || !acceptingColor || resigningColor === acceptingColor) return null;
-
-    const winner = acceptingColor;
-    const resultType = game.pendingResignation.resignType as ResultType;
-    game.status = "finished";
-    game.gameState = { ...game.gameState, gameOver: true, winner, resultType };
-    game.pendingResignation = null;
-    this.clearTurnTimer(game);
-    void this.deletePersistedGame(gameId);
-    return { winner, resultType };
+  async handleAcceptResignation(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<{ winner: Player; resultType: ResultType } | null> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as { winner: Player; resultType: ResultType };
+      const game = this.games.get(gameId);
+      if (!game || game.status !== "playing" || game.phase !== "resignation_offer" || !game.pendingResignation) return null;
+      if (Date.now() > game.pendingResignation.deadlineAt) {
+        if (game.escrowStatus === "active") await this.pauseCashGameForReview(game, "resignation_response_timeout", game.pendingResignation.deadlineAt);
+        return null;
+      }
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const resigningColor = this.getPlayerColor(game, game.pendingResignation.player);
+      const acceptingColor = this.getPlayerColor(game, playerAddress);
+      if (!resigningColor || !acceptingColor || resigningColor === acceptingColor) return null;
+      const result = { winner: acceptingColor, resultType: game.pendingResignation.resignType as ResultType };
+      game.status = "finished";
+      game.gameState = { ...game.gameState, gameOver: true, winner: result.winner, resultType: result.resultType };
+      game.phase = "terminal";
+      game.pendingResignation = null;
+      this.clearTurnTimer(game);
+      await this.commitMutation(game, playerAddress, command, "resignation_accepted", result, result);
+      await this.deletePersistedGame(gameId);
+      return result;
+    });
   }
 
-  handleRejectResignation(gameId: string, playerAddress: string): boolean {
-    const game = this.games.get(gameId);
-    if (!game || !game.pendingResignation) return false;
-    const resigningColor = this.getPlayerColor(game, game.pendingResignation.player);
-    const rejectingColor = this.getPlayerColor(game, playerAddress);
-    if (!resigningColor || !rejectingColor || resigningColor === rejectingColor) return false;
-    game.pendingResignation = null;
-    return true;
+  async handleRejectResignation(
+    gameId: string,
+    playerAddress: string,
+    command?: MutationCommand,
+  ): Promise<boolean> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed as boolean;
+      const game = this.games.get(gameId);
+      if (!game || game.status !== "playing" || game.phase !== "resignation_offer" || !game.pendingResignation) return false;
+      if (Date.now() > game.pendingResignation.deadlineAt) {
+        if (game.escrowStatus === "active") await this.pauseCashGameForReview(game, "resignation_response_timeout", game.pendingResignation.deadlineAt);
+        return false;
+      }
+      await this.ensureCashOwnership(game);
+      if (game.escrowStatus === "active") await this.requireCashPlayGate(game, playerAddress);
+      if (!command || command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      const resigningColor = this.getPlayerColor(game, game.pendingResignation.player);
+      const rejectingColor = this.getPlayerColor(game, playerAddress);
+      if (!resigningColor || !rejectingColor || resigningColor === rejectingColor) return false;
+      const previousPhase = game.pendingResignation.previousPhase;
+      const previousDeadlineAt = game.pendingResignation.previousDeadlineAt;
+      game.pendingResignation = null;
+      game.phase = previousPhase;
+      game.deadlineAt = previousDeadlineAt;
+      this.scheduleTurnTimer(game);
+      await this.commitMutation(game, playerAddress, command, "resignation_rejected", {}, { rejected: true });
+      return true;
+    });
   }
 
-  // ── Balance Service Integration ────────────────────────────────
-
-  async lockFundsForGame(gameId: string, playerA: string, playerB: string, wagerAmount: number): Promise<boolean> {
-    if (!this.balanceService) return false;
-    const game = this.games.get(gameId);
-    if (!game) return false;
-
-    const [hasA, hasB] = await Promise.all([
-      this.balanceService.checkBalance(playerA, wagerAmount),
-      this.balanceService.checkBalance(playerB, wagerAmount),
-    ]);
-    if (!hasA || !hasB) return false;
-
-    const locked = await this.balanceService.lockFunds(gameId, playerA, playerB, wagerAmount);
-    if (locked) {
-      game.escrowStatus = "pending_deposits";
-      void this.persistGame(game);
-    }
-    return locked;
-  }
-
-  async settleFunds(gameId: string, winner: string, resultType: ResultType): Promise<boolean> {
-    if (!this.balanceService) return false;
-    const game = this.games.get(gameId);
-    if (!game || game.escrowStatus !== "active") return false;
-
-    const settled = await this.balanceService.settleFunds(gameId, winner, resultType);
-    if (settled) game.escrowStatus = "settled";
-    return settled;
-  }
 
   // ── Stalling Detection ────────────────────────────────────────
 
@@ -847,98 +1564,312 @@ export class GameManager {
     return null;
   }
 
-  private startTurnTimer(game: ServerGame): void {
+  private scheduleWaitingExpiry(game: ServerGame): void {
+    if (!game.ownershipTimer || game.status !== "waiting" || !game.playerWhite || game.playerBlack) return;
     this.clearTurnTimer(game);
+    const delay = Math.max(0, game.createdAt + WAITING_GAME_EXPIRY_MS - Date.now());
     game.turnTimer = setTimeout(() => {
-      if (game.status === "playing" && !game.gameState.gameOver) {
+      void this.withGameLock(game.id, async () => {
+        if (
+          this.games.get(game.id) !== game ||
+          game.status !== "waiting" ||
+          !game.playerWhite ||
+          game.playerBlack
+        ) return;
+        await this.ensureCashOwnership(game);
+        game.status = "abandoned";
+        game.phase = "terminal";
+        await this.deletePersistedGame(game.id);
+        this.detachGame(game);
+      }).catch((error: unknown) => {
+        logger.error("Waiting game expiry failed", { gameId: game.id, errorCode: error instanceof Error ? error.name : "unknown" });
+      });
+    }, delay);
+  }
+
+  private startTurnTimer(game: ServerGame, seconds = game.turnTimeLimit): void {
+    this.clearTurnTimer(game);
+    game.deadlineAt = Date.now() + seconds * 1000;
+    this.scheduleTurnTimer(game);
+  }
+
+  private scheduleTurnTimer(game: ServerGame): void {
+    if (!game.ownershipTimer) return;
+    if (game.turnTimer) clearTimeout(game.turnTimer);
+    game.turnTimer = null;
+    const expectedDeadline = game.deadlineAt;
+    if (expectedDeadline === null || game.status !== "playing") return;
+    const delay = Math.max(0, expectedDeadline - Date.now());
+    game.turnTimer = setTimeout(() => {
+      void this.withGameLock(game.id, async () => {
+        const current = this.games.get(game.id);
+        if (
+          current !== game ||
+          game.status !== "playing" ||
+          game.gameState.gameOver ||
+          game.deadlineAt !== expectedDeadline
+        ) return;
+        await this.ensureCashOwnership(game);
+        game.turnTimer = null;
+
+        if (game.escrowStatus === "active") {
+          const reason: GameReviewReason = game.pendingDoubleOffer
+            ? "double_response_timeout"
+            : game.pendingResignation
+              ? "resignation_response_timeout"
+              : "turn_timeout";
+          await this.pauseCashGameForReview(game, reason, expectedDeadline);
+          return;
+        }
+
+        if (game.pendingDoubleOffer) {
+          const doubler = this.getPlayerColor(game, game.pendingDoubleOffer.doubler);
+          if (!doubler) return;
+          const responder: Player = doubler === "white" ? "black" : "white";
+          const rejected = rejectDouble(game.gameState, responder);
+          game.gameState = rejected.state;
+          game.pendingDoubleOffer = null;
+          game.status = "finished";
+          game.phase = "terminal";
+          game.deadlineAt = null;
+          await this.commitMutation(game, "system:deadline", this.systemCommand(game, "double_response_timeout", expectedDeadline), "double_response_timeout", {}, { winner: rejected.winner });
+          await this.deletePersistedGame(game.id);
+          this.broadcastToGame(game, { type: "double_rejected", game_id: game.id, winner: rejected.winner, revision: game.revision });
+          await this.emitTerminalResult(game, rejected.winner, "normal");
+          return;
+        }
+        if (game.pendingResignation) {
+          const previousPhase = game.pendingResignation.previousPhase;
+          const previousDeadlineAt = game.pendingResignation.previousDeadlineAt;
+          game.pendingResignation = null;
+          game.phase = previousPhase;
+          game.deadlineAt = previousDeadlineAt;
+          this.scheduleTurnTimer(game);
+          await this.commitMutation(game, "system:deadline", this.systemCommand(game, "resignation_response_timeout", expectedDeadline), "resignation_response_timeout", {}, { rejected: true });
+          this.broadcastToGame(game, { type: "resign_rejected", game_id: game.id, revision: game.revision });
+          return;
+        }
+
+
         if (game.pendingConfirmation) {
-          // Auto-confirm on timeout
           game.pendingConfirmation = null;
           game.turnMoveStack = [];
-          // Start timer for next player's roll phase
+          game.phase = "await_roll";
           this.startTurnTimer(game);
+          await this.commitMutation(game, "system:deadline", this.systemCommand(game, "confirmation_timeout", expectedDeadline), "confirmation_timeout", {}, game.gameState);
           this.broadcastToGame(game, {
             type: "turn_ended",
             game_id: game.id,
             next_player: game.gameState.currentPlayer,
             game_state: game.gameState,
+            revision: game.revision,
           });
-        } else {
-          game.turnMoveStack = [];
-          game.gameState = endTurn(game.gameState);
-          // Start timer for next player's roll phase
-          this.startTurnTimer(game);
-          this.broadcastToGame(game, {
-            type: "turn_ended",
-            game_id: game.id,
-            next_player: game.gameState.currentPlayer,
-            game_state: game.gameState,
-          });
+          return;
         }
-      }
-    }, game.turnTimeLimit * 1000);
+
+        if (game.gameState.dice !== null && hasLegalMoves(game.gameState)) {
+          const loser = game.gameState.currentPlayer;
+          const winner: Player = loser === "white" ? "black" : "white";
+          game.status = "finished";
+          game.phase = "terminal";
+          game.deadlineAt = null;
+          game.gameState = { ...game.gameState, gameOver: true, winner, resultType: "normal" };
+          await this.commitMutation(game, "system:deadline", this.systemCommand(game, "turn_timeout_forfeit", expectedDeadline), "turn_timeout_forfeit", {}, { winner });
+          await this.deletePersistedGame(game.id);
+          await this.emitTerminalResult(game, winner, "normal");
+          return;
+        }
+
+        game.turnMoveStack = [];
+        game.gameState = endTurn(game.gameState);
+        game.phase = "await_roll";
+        this.startTurnTimer(game);
+        await this.commitMutation(game, "system:deadline", this.systemCommand(game, "turn_timeout", expectedDeadline), "turn_timeout", {}, game.gameState);
+        this.broadcastToGame(game, {
+          type: "turn_ended",
+          game_id: game.id,
+          next_player: game.gameState.currentPlayer,
+          game_state: game.gameState,
+          revision: game.revision,
+        });
+      }).catch((error: unknown) => {
+        logger.error("Game deadline processing failed", { gameId: game.id, errorCode: error instanceof Error ? error.name : "unknown" });
+      });
+    }, delay);
   }
 
   private clearTurnTimer(game: ServerGame): void {
-    if (game.turnTimer) {
-      clearTimeout(game.turnTimer);
-      game.turnTimer = null;
-    }
+    if (game.turnTimer) clearTimeout(game.turnTimer);
+    game.turnTimer = null;
+    game.deadlineAt = null;
   }
 
-  startDisconnectGracePeriod(game: ServerGame, address: string, onForfeit?: (gameId: string, winner: Player, resultType: ResultType) => void): void {
-    this.cancelDisconnectGracePeriod(game);
-    game.disconnectedPlayer = address;
-    game.disconnectedAt = Date.now();
-    // Extend grace period to 120s when double deposits are pending (on-chain tx takes time)
-    const graceSec = game.pendingDoubleDeposit ? DISCONNECT_GRACE_DOUBLE_SEC : DISCONNECT_GRACE_SEC;
-
-    const opponent = game.playerWhite?.address === address ? game.playerBlack : game.playerWhite;
-    if (opponent) {
-      this.sendToPlayer(opponent, {
-        type: "opponent_disconnecting",
-        game_id: game.id,
-        grace_seconds: graceSec,
-      });
-    }
-
-    let elapsed = 0;
-    game.disconnectTimer = setInterval(() => {
-      elapsed += DISCONNECT_CHECK_INTERVAL_MS / 1000;
-      const remaining = graceSec - elapsed;
-
-      if (remaining <= 0) {
-        // Grace period expired — forfeit
-        this.cancelDisconnectGracePeriod(game);
-        const disconnectedColor = this.getPlayerColor(game, address);
-        if (disconnectedColor && game.status === "playing") {
-          const winner: Player = disconnectedColor === "white" ? "black" : "white";
-          game.status = "finished";
-          game.gameState.gameOver = true;
-          game.gameState.winner = winner;
-          game.gameState.resultType = "normal";
-          this.clearTurnTimer(game);
-          void this.deletePersistedGame(game.id);
-          if (onForfeit) {
-            onForfeit(game.id, winner, "normal");
-          } else {
-            this.broadcastToGame(game, {
-              type: "game_over",
-              game_id: game.id,
-              winner,
-              result_type: "normal",
-              game_state: game.gameState,
-            });
-          }
-        }
-      } else if (opponent) {
-        this.sendToPlayer(opponent, {
-          type: "disconnect_countdown",
-          game_id: game.id,
-          seconds_remaining: remaining,
+  async prepareForDrain(): Promise<void> {
+    await Promise.all([...this.games.values()].map(async (game) => {
+      if (game.escrowStatus !== "active" || game.status !== "playing") return;
+      try {
+        await this.withGameLock(game.id, async () => {
+          await this.ensureCashOwnership(game);
+          this.cancelDisconnectGracePeriod(game);
+          await this.pauseCashGameForReview(game, "platform_recovery", Date.now());
+        });
+      } catch (error) {
+        logger.error("Failed to pause cash game for drain", {
+          gameId: game.id,
+          errorCode: error instanceof Error ? error.name : "unknown",
         });
       }
-    }, DISCONNECT_CHECK_INTERVAL_MS);
+    }));
+  }
+
+  async requestCashReview(
+    gameId: string,
+    playerAddress: string,
+    command: MutationCommand,
+  ): Promise<boolean> {
+    return this.withGameLock(gameId, async () => {
+      const replayed = await this.replayCashCommand<boolean>(gameId, playerAddress, command);
+      if (replayed !== undefined) return replayed;
+      const game = this.games.get(gameId);
+      if (!game || game.escrowStatus !== "active" || game.status !== "playing") return game?.phase === "review";
+      if (!this.getPlayerColor(game, playerAddress)) return false;
+      await this.ensureCashOwnership(game);
+      if (command.expectedRevision !== game.revision) throw new Error("GAME_REVISION_CONFLICT");
+      await this.pauseCashGameForReview(game, "terms_unavailable", Date.now(), playerAddress, command);
+      return true;
+    });
+  }
+
+  private async pauseCashGameForReview(
+    game: ServerGame,
+    reason: GameReviewReason,
+    deadlineIdentity: number,
+    principal = "system:deadline",
+    command?: MutationCommand,
+  ): Promise<void> {
+    const expectedRevision = game.revision;
+    const captured = await captureCashGameReviewSnapshot({
+      gameId: game.id,
+      reason,
+      phase: game.phase,
+      deadlineAt: game.deadlineAt === null ? null : new Date(game.deadlineAt),
+      gameRevision: expectedRevision,
+    });
+    if (!captured) throw new Error("CASH_GAME_REVIEW");
+    this.clearTurnTimer(game);
+    game.status = "abandoned";
+    game.phase = "review";
+    game.reviewReason = reason;
+    await this.commitMutation(
+      game,
+      principal,
+      command ?? {
+        commandId: `system:${game.id}:${reason}:${deadlineIdentity}`,
+        expectedRevision,
+        commandType: "system_cash_review",
+      },
+      "cash_game_review",
+      { reason },
+      { reason, fundsStatus: "held_for_review" },
+    );
+    this.broadcastToGame(game, {
+      type: "game_review",
+      game_id: game.id,
+      reason,
+      funds_status: "held_for_review",
+      revision: game.revision,
+    });
+    await this.deletePersistedGame(game.id);
+    this.detachGame(game);
+  }
+
+  async startDisconnectGracePeriod(
+    game: ServerGame,
+    address: string,
+    onForfeit?: (gameId: string, winner: Player, resultType: ResultType) => void,
+  ): Promise<void> {
+    await this.withGameLock(game.id, async () => {
+      if (game.status !== "playing" || game.gameState.gameOver) return;
+      const expectedRevision = game.revision;
+      await this.ensureCashOwnership(game);
+      this.cancelDisconnectGracePeriod(game);
+      const disconnectedAt = Date.now();
+      game.disconnectedPlayer = address;
+      game.disconnectedAt = disconnectedAt;
+      const graceSec = game.escrowStatus === "active"
+        ? this.cashRulesFor(game).disconnectGraceSeconds
+        : DISCONNECT_GRACE_SEC;
+      await this.commitMutation(
+        game,
+        address,
+        this.systemCommand(game, "player_disconnected", `${address}:${expectedRevision}`),
+        "player_disconnected",
+        { player: address, disconnectedAt, graceSeconds: graceSec },
+        { disconnectedAt, graceSeconds: graceSec },
+      );
+      const opponent = game.playerWhite?.address === address ? game.playerBlack : game.playerWhite;
+      if (opponent) {
+        this.sendToPlayer(opponent, {
+          type: "opponent_disconnecting",
+          game_id: game.id,
+          grace_seconds: graceSec,
+        });
+      }
+      this.scheduleDisconnectGraceTimer(game, address, disconnectedAt, onForfeit);
+    });
+  }
+
+  private scheduleDisconnectGraceTimer(
+    game: ServerGame,
+    address: string,
+    disconnectedAt: number,
+    onForfeit?: (gameId: string, winner: Player, resultType: ResultType) => void,
+  ): void {
+    if (!game.ownershipTimer) return;
+    clearInterval(game.disconnectTimer ?? undefined);
+    const graceSec = game.escrowStatus === "active"
+      ? this.cashRulesFor(game).disconnectGraceSeconds
+      : DISCONNECT_GRACE_SEC;
+    const deadline = disconnectedAt + graceSec * 1_000;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1_000));
+      if (remaining > 0) {
+        const opponent = game.playerWhite?.address === address ? game.playerBlack : game.playerWhite;
+        if (opponent) {
+          this.sendToPlayer(opponent, {
+            type: "disconnect_countdown",
+            game_id: game.id,
+            seconds_remaining: remaining,
+          });
+        }
+        return;
+      }
+      void this.withGameLock(game.id, async () => {
+        await this.ensureCashOwnership(game);
+        this.cancelDisconnectGracePeriod(game);
+        if (game.escrowStatus === "active") {
+          await this.pauseCashGameForReview(game, "player_disconnect", deadline);
+          return;
+        }
+        const disconnectedColor = this.getPlayerColor(game, address);
+        if (!disconnectedColor) return;
+        const winner: Player = disconnectedColor === "white" ? "black" : "white";
+        game.status = "finished";
+        game.phase = "terminal";
+        game.gameState = { ...game.gameState, gameOver: true, winner, resultType: "normal" };
+        this.clearTurnTimer(game);
+        await this.commitMutation(game, "system:disconnect", this.systemCommand(game, "disconnect_forfeit", deadline), "disconnect_forfeit", {}, { winner });
+        await this.deletePersistedGame(game.id);
+        if (onForfeit) onForfeit(game.id, winner, "normal");
+        else await this.emitTerminalResult(game, winner, "normal");
+      }).catch((error: unknown) => {
+        logger.error("Disconnect deadline processing failed", { gameId: game.id, errorCode: error instanceof Error ? error.name : "unknown" });
+      });
+    };
+    game.disconnectTimer = setInterval(tick, game.escrowStatus === "active"
+      ? this.cashRulesFor(game).disconnectCheckIntervalMs
+      : DISCONNECT_CHECK_INTERVAL_MS);
+    tick();
   }
 
   cancelDisconnectGracePeriod(game: ServerGame): void {
@@ -952,16 +1883,11 @@ export class GameManager {
 
   broadcastToGame(game: ServerGame, message: ServerMessage): void {
     const data = JSON.stringify(message);
-    if (game.playerWhite?.ws.readyState === 1) game.playerWhite.ws.send(data);
-    if (game.playerBlack?.ws.readyState === 1) game.playerBlack.ws.send(data);
-    for (const spec of game.spectators) {
-      if (spec.ws.readyState === 1) spec.ws.send(data);
-    }
+    if (game.playerWhite) sendWebSocketData(game.playerWhite.ws, data);
+    if (game.playerBlack) sendWebSocketData(game.playerBlack.ws, data);
   }
 
   sendToPlayer(player: PlayerConnection | null, message: ServerMessage): void {
-    if (player?.ws.readyState === 1) {
-      player.ws.send(JSON.stringify(message));
-    }
+    if (player) sendWebSocketData(player.ws, JSON.stringify(message));
   }
 }

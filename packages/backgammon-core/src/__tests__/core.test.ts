@@ -289,10 +289,9 @@ describe("Bearing Off", () => {
     expect(hasBearOffFrom23).toBe(true);
   });
 
-  it("black over-bearing: checker on point 23, die 6, checker on point 20 is legal (20 is farther from bearing off)", () => {
-    // Point 20 is farther from bearing off than 23 for black.
-    // The current code checks from+1 to 24 (points 24 only for from=23),
-    // so a checker on point 20 does NOT block over-bearing from 23.
+  it("black over-bearing: checker on point 23, die 6, checker on point 20 is illegal", () => {
+    // App point 20 is farther from black's bearing-off edge than point 23,
+    // so point 23 is not black's farthest occupied point.
     const board = makeBoard(
       { 23: -1, 20: -1 },
       { blackOff: 13, whiteOff: 0 }
@@ -303,7 +302,7 @@ describe("Bearing Off", () => {
     const hasBearOffFrom23 = sequences.some((seq) =>
       seq.some((m) => m.from === 23 && m.to === 25 && m.die === 6)
     );
-    expect(hasBearOffFrom23).toBe(true);
+    expect(hasBearOffFrom23).toBe(false);
   });
 
   it("black over-bearing: checker on point 20, die 6, no checker on 21-24 is legal", () => {
@@ -318,8 +317,9 @@ describe("Bearing Off", () => {
     expect(hasBearOffFrom20).toBe(true);
   });
 
-  it("black over-bearing: checker on point 20, die 6, checker on point 23 is illegal", () => {
-    // The code checks from+1 (21) to 24; point 23 has a black checker → illegal
+  it("black over-bearing: checker on point 20, die 6, checker on point 23 is legal", () => {
+    // App point 23 is closer to black's bearing-off edge than point 20,
+    // so point 20 remains black's farthest occupied point.
     const board = makeBoard(
       { 20: -1, 23: -1 },
       { blackOff: 13, whiteOff: 0 }
@@ -330,7 +330,7 @@ describe("Bearing Off", () => {
     const hasBearOffFrom20WithDie6 = sequences.some((seq) =>
       seq.some((m) => m.from === 20 && m.to === 25 && m.die === 6)
     );
-    expect(hasBearOffFrom20WithDie6).toBe(false);
+    expect(hasBearOffFrom20WithDie6).toBe(true);
   });
 });
 

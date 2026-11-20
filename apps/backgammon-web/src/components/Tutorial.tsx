@@ -333,7 +333,7 @@ export default function Tutorial({ forceShow = false, onClose }: TutorialProps) 
         }
       `}</style>
 
-      <FocusTrap active={visible}>
+      <FocusTrap active={visible} onEscape={dismiss}>
         {/* Backdrop */}
         <div
           role="dialog"

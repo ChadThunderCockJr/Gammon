@@ -4,11 +4,12 @@ import { DEFAULT_TURN_TIME_LIMIT_SEC } from "@/lib/constants";
 
 export interface GameContext {
   gameId: string | null;
+  revision: number;
   myColor: Player | null;
   gameState: GameState | null;
   legalMoves: Move[];
   opponent: string | null;
-  status: "idle" | "waiting" | "queued" | "playing" | "finished";
+  status: "idle" | "waiting" | "queued" | "playing" | "finished" | "review";
   winner: Player | null;
   resultType: string | null;
   opponentDisconnected: boolean;
@@ -23,14 +24,8 @@ export interface GameContext {
   disconnectCountdown: number | null;
   doubleOffered: boolean;
   doubleOfferedBy: Player | null;
-  doubleDepositRequired: boolean;
-  doubleDepositAmount: string;
-  doubleDepositNewCubeValue: number;
-  doubleDepositDoubler: string | null;
-  doubleDepositResponder: string | null;
-  doubleDepositDoublerDone: boolean;
-  doubleDepositResponderDone: boolean;
-  doubleDepositComplete: boolean;
+  doubleOfferDeadlineAt: string | null;
+  reviewReason: string | null;
   turnHistory: TurnRecord[];
   currentTurnPlayer: Player | null;
   currentTurnDice: [number, number] | null;
@@ -45,6 +40,7 @@ export interface GameContext {
 }
 
 export type GameAction =
+  | { type: "SET_REVISION"; revision: number }
   | { type: "GAME_CREATED"; gameId: string; color: Player }
   | { type: "GAME_JOINED"; gameId: string; color: Player; opponent: string; opponentName?: string }
   | {
@@ -60,12 +56,14 @@ export type GameAction =
       matchState?: MatchState | null;
       turnTimeLimit?: number;
       needsConfirmation?: boolean;
+      pendingDouble?: { player: Player; cubeValue: number; deadlineAt: string } | null;
     }
   | {
       type: "GAME_SYNC";
       gameState: GameState;
       legalMoves: Move[];
       needsConfirmation?: boolean;
+      pendingDouble?: { player: Player; cubeValue: number; deadlineAt: string } | null;
     }
   | { type: "DICE_ROLLED"; gameState: GameState; legalMoves: Move[]; player: Player; needsConfirmation?: boolean }
   | { type: "MOVE_MADE"; gameState: GameState; legalMoves: Move[]; player: Player; move: Move; needsConfirmation?: boolean }
@@ -92,19 +90,17 @@ export type GameAction =
   | { type: "DISCONNECT_COUNTDOWN"; countdown: number }
   | { type: "REACTION_RECEIVED"; emoji: string; from: string }
   | { type: "CLEAR_REACTION" }
-  | { type: "DOUBLE_OFFERED"; player: Player; cubeValue: number }
+  | { type: "DOUBLE_OFFERED"; player: Player; cubeValue: number; deadlineAt: string }
   | { type: "DOUBLE_ACCEPTED"; cubeValue: number; cubeOwner: Player }
   | { type: "DOUBLE_REJECTED"; winner: Player }
-  | { type: "DOUBLE_AWAITING_DEPOSITS"; newCubeValue: number; additionalDeposit: string; doubler: string; responder: string }
-  | { type: "DOUBLE_DEPOSIT_RECEIVED"; player: string; depositsComplete: boolean }
-  | { type: "DOUBLE_DEPOSITS_COMPLETE"; newCubeValue: number; cubeOwner: Player }
-  | { type: "DOUBLE_DEPOSIT_TIMEOUT" }
+  | { type: "GAME_REVIEW"; reason: string }
   | { type: "LOCAL_MOVE"; from: number; to: number; die: number; newState: GameState; legalMoves: Move[] }
   | { type: "LOCAL_UNDO" }
   | { type: "CLEAR_BUFFER" };
 
 export const initialGameContext: GameContext = {
   gameId: null,
+  revision: 0,
   myColor: null,
   gameState: null,
   legalMoves: [],
@@ -124,14 +120,8 @@ export const initialGameContext: GameContext = {
   disconnectCountdown: null,
   doubleOffered: false,
   doubleOfferedBy: null,
-  doubleDepositRequired: false,
-  doubleDepositAmount: "0",
-  doubleDepositNewCubeValue: 0,
-  doubleDepositDoubler: null,
-  doubleDepositResponder: null,
-  doubleDepositDoublerDone: false,
-  doubleDepositResponderDone: false,
-  doubleDepositComplete: false,
+  doubleOfferDeadlineAt: null,
+  reviewReason: null,
   turnHistory: [],
   currentTurnPlayer: null,
   currentTurnDice: null,

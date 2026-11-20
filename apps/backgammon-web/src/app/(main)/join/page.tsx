@@ -27,20 +27,39 @@ function Card({
   );
 }
 
+function parseInviteId(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  let candidate = trimmed;
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    const match = url.pathname.match(/^\/join\/([^/]+)$/);
+    if (match) candidate = decodeURIComponent(match[1]);
+  } catch {
+    // Fall through to typed identifier validation.
+  }
+  return /^(?:free|cash)_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate)
+    ? candidate
+    : null;
+}
+
 // ═════════════════════════════════════════════════════════════════
 // JOIN PAGE — "Enter Code" Screen
 // ═════════════════════════════════════════════════════════════════
 export default function JoinPage() {
   const router = useRouter();
   const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  const walletBalance = 124.5;
 
   const handleLookUp = () => {
-    const trimmed = code.trim();
-    if (trimmed) {
-      router.push(`/join/${trimmed}`);
+    const inviteId = parseInviteId(code);
+    if (!inviteId) {
+      setError("Enter a valid typed Gammon invite ID or complete invite link.");
+      return;
     }
+    setError(null);
+    router.push(`/join/${encodeURIComponent(inviteId)}`);
   };
 
   return (
@@ -91,35 +110,7 @@ export default function JoinPage() {
         >
           Join Match
         </span>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 12px",
-            border: "1px solid var(--color-border-subtle)",
-            borderRadius: 20,
-            background: "var(--color-bg-surface)",
-          }}
-        >
-          <span
-            style={{
-              fontSize: "0.8125rem",
-              fontWeight: 600,
-              color: "var(--color-gold-primary)",
-            }}
-          >
-            ${walletBalance.toFixed(2)}
-          </span>
-          <span
-            style={{
-              fontSize: "0.625rem",
-              color: "var(--color-text-muted)",
-            }}
-          >
-            USDC
-          </span>
-        </div>
+        <div style={{ width: 96 }} aria-hidden="true" />
       </header>
 
       {/* ─── Main Content ───────────────────────────────────── */}
@@ -145,7 +136,7 @@ export default function JoinPage() {
           >
             {/* Heading */}
             <div style={{ textAlign: "center" }}>
-              <h2
+              <h1
                 className="text-2xl sm:text-4xl"
                 style={{
                   fontWeight: 700,
@@ -156,7 +147,7 @@ export default function JoinPage() {
                 }}
               >
                 Join a Match
-              </h2>
+              </h1>
               <p
                 style={{
                   fontSize: "0.875rem",
@@ -171,8 +162,10 @@ export default function JoinPage() {
             {/* Card with inputs */}
             <Card style={{ width: "100%" }}>
               {/* Code input label */}
-              <div
+              <label
+                htmlFor="match-invite"
                 style={{
+                  display: "block",
                   fontSize: "0.625rem",
                   fontWeight: 700,
                   color: "var(--color-text-muted)",
@@ -181,18 +174,21 @@ export default function JoinPage() {
                   marginBottom: 8,
                 }}
               >
-                Match Code
-              </div>
+                Match ID or invite link
+              </label>
 
               {/* Code input */}
               <input
+                id="match-invite"
                 type="text"
-                placeholder="MATCH-XXXXX-XXXXX"
+                placeholder="Paste the match ID or invite link"
                 value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                onChange={(e) => { setCode(e.target.value); setError(null); }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleLookUp();
                 }}
+                aria-invalid={Boolean(error)}
+                aria-describedby="match-invite-help match-invite-error"
                 style={{
                   width: "100%",
                   padding: "14px 16px",
@@ -211,60 +207,16 @@ export default function JoinPage() {
                 }}
               />
 
-              {/* Or paste link divider */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  margin: "16px 0",
-                }}
-              >
-                <div
-                  style={{
-                    flex: 1,
-                    height: 1,
-                    background: "var(--color-bg-subtle)",
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: "0.6875rem",
-                    color: "var(--color-text-muted)",
-                  }}
-                >
-                  or paste a link
-                </span>
-                <div
-                  style={{
-                    flex: 1,
-                    height: 1,
-                    background: "var(--color-bg-subtle)",
-                  }}
-                />
-              </div>
-
-              {/* Link input */}
-              <input
-                type="text"
-                placeholder="play.platform.com/join/..."
-                style={{
-                  width: "100%",
-                  padding: "10px 14px",
-                  borderRadius: 6,
-                  border: "1.5px solid var(--color-border-subtle)",
-                  background: "var(--color-bg-base)",
-                  fontSize: "0.75rem",
-                  color: "var(--color-text-secondary)",
-                  outline: "none",
-                  fontFamily: "var(--font-mono)",
-                  boxSizing: "border-box",
-                }}
-              />
+              <p id="match-invite-help" style={{ margin: "10px 0 0", fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
+                Opening an invite only loads its terms. Cash games require a separate review and explicit acceptance before any reserve transaction.
+              </p>
+              {error ? <p id="match-invite-error" role="alert" style={{ margin: "10px 0 0", fontSize: "0.75rem", color: "var(--color-danger)" }}>{error}</p> : null}
             </Card>
 
             {/* Look Up Match button */}
             <button
+              type="button"
+              disabled={!code.trim()}
               onClick={handleLookUp}
               style={{
                 width: "100%",
@@ -276,11 +228,9 @@ export default function JoinPage() {
                 color: "var(--color-accent-fg)",
                 fontSize: "0.9375rem",
                 fontWeight: 700,
-                cursor: "pointer",
                 fontFamily: "var(--font-body)",
-                letterSpacing: "-0.01em",
-                opacity: code.length > 0 ? 1 : 0.4,
-                pointerEvents: code.length > 0 ? "auto" : "none",
+                opacity: code.trim() ? 1 : 0.4,
+                cursor: code.trim() ? "pointer" : "not-allowed",
                 boxShadow: "var(--shadow-gold)",
                 transition: "opacity 0.2s",
               }}
@@ -288,41 +238,6 @@ export default function JoinPage() {
               Look Up Match &rarr;
             </button>
 
-            {/* Scan QR Code button */}
-            <button
-              style={{
-                background: "none",
-                border: "none",
-                fontSize: "0.8125rem",
-                color: "var(--color-text-secondary)",
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "var(--font-body)",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--color-text-secondary)"
-                strokeWidth="1.5"
-              >
-                <rect x="3" y="3" width="7" height="7" rx="1" />
-                <rect x="14" y="3" width="7" height="7" rx="1" />
-                <rect x="3" y="14" width="7" height="7" rx="1" />
-                <rect x="14" y="14" width="4" height="4" rx="0.5" />
-                <path
-                  d="M21 14h-3v3M18 21h3v-4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Scan QR Code
-            </button>
           </div>
         </div>
       </main>

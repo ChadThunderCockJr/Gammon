@@ -1,545 +1,264 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useAbstraxionSigningClient } from "@burnt-labs/abstraxion";
+import { z } from "zod";
 import Link from "next/link";
-import { useGame } from "@/hooks/useGame";
+import { useFundsConfig } from "@/hooks/useFundsConfig";
 import { useAuth } from "@/hooks/useAuth";
+import { useGame } from "@/hooks/useGame";
+import { useServerSession } from "@/hooks/useServerSession";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
+import { authenticatedFetch } from "@/lib/server-session";
+import { API_BASE } from "@/lib/api";
+import { VERUSD_DENOM, VERUSD_ESCROW_CONTRACT } from "@/lib/config";
 import { WS_URL } from "@/lib/ws-config";
+import { withReturnTo } from "@/lib/return-to";
+import { safeMoneyFailure } from "../../cash-action-safety";
+import { CashQuoteDisclosure } from "../../cash-quote-disclosure";
+const QuoteSchema = z.object({
+  id: z.string().uuid(), gameId: z.string().uuid(), quoteHash: z.string().regex(/^[a-f0-9]{64}$/), playerA: z.string(), playerB: z.string(),
+  stakeMicroUsd: z.string(), reservePerPlayerMicroUsd: z.string(), rakeBps: z.number(), cubeCap: z.literal(8),
+  state: z.enum(["offered", "accepted", "reserving", "active", "settlement_pending", "settled", "refunded", "review", "expired"]), expiresAt: z.string().datetime(), fundingDeadline: z.string().datetime().nullable(),
+  fundsMode: z.enum(["free", "verusd_testnet", "verusd_production", "legacy_unverified"]), testFunds: z.boolean(),
+  asset: z.object({ denom: z.string(), decimals: z.number(), symbol: z.string(), displayDenomination: z.string() }),
+  termsSnapshot: z.record(z.string(), z.unknown()), legalSnapshot: z.record(z.string(), z.unknown()),
+}).passthrough();
+type Quote = z.infer<typeof QuoteSchema>;
+const ConfigSchema = z.object({ testFunds: z.boolean(), wagerEnabled: z.boolean(), cashTermsVersion: z.string().nullable(), responsiblePlayVersion: z.string().nullable() });
+const TxResultSchema = z.object({ transactionHash: z.string().regex(/^[0-9a-fA-F]{64}$/) }).passthrough();
+const browserSandboxRefundRecovery = process.env.NEXT_PUBLIC_E2E_SANDBOX === "1" && process.env.NODE_ENV === "development";
 
-// ─── Local Card Component ───────────────────────────────────────
-function Card({
-  children,
-  style,
-}: {
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-}) {
-  return (
-    <div
-      style={{
-        background: "var(--color-bg-surface)",
-        border: "1px solid var(--color-border-subtle)",
-        borderRadius: 8,
-        padding: 20,
-        boxShadow: "var(--shadow-card)",
-        ...style,
-      }}
-    >
-      {children}
-    </div>
-  );
+function display(micro: string): string { const number = BigInt(micro); return `${number / 1_000_000n}.${(number % 1_000_000n).toString().padStart(6, "0").slice(0, 2)}`; }
+function headers(): HeadersInit { return { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }; }
+function readable(error: unknown): string { console.error("Cash-game action failed", error); return safeMoneyFailure("wager"); }
+function sessionMoneyGateMessage(status: "disconnected" | "authorizing" | "error" | "ready", error: string | null): string {
+  if (status === "error") return `${error ?? "Wallet authorization could not be verified"}. Retry authorization or change wallets before taking a money action. No funds will be reserved.`;
+  if (status === "authorizing") return "Wallet authorization is in progress. No funds will be reserved until it finishes.";
+  if (status === "disconnected") return "Connect a wallet and authorize its secure session before taking a money action. No funds will be reserved.";
+  return safeMoneyFailure("wager");
 }
 
-// ─── Local Avatar Component ─────────────────────────────────────
-function Avatar({ name, size = 36 }: { name: string; size?: number }) {
-  return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        background: "var(--color-bg-elevated)",
-        border: "2px solid var(--color-gold-primary)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: size * 0.38,
-        fontWeight: 700,
-        color: "var(--color-text-secondary)",
-        flexShrink: 0,
-      }}
-    >
-      {name[0]}
-    </div>
-  );
+function parseInviteCode(value: string): { kind: "free" | "cash"; id: string } | null {
+  const match = /^(free|cash)_([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(value);
+  return match ? { kind: match[1].toLowerCase() as "free" | "cash", id: match[2] } : null;
 }
 
-// ─── Icons ──────────────────────────────────────────────────────
-function ShieldIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="var(--color-gold-primary)"
-      strokeWidth="1.5"
-    >
-      <path d="M8 1.5L3 4v3c0 3 2 5.5 5 6.5 3-1 5-3.5 5-6.5V4L8 1.5z" />
-      <path
-        d="M6 8l1.5 1.5L10.5 6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-// ─── Pulsing Dot ────────────────────────────────────────────────
-function PulsingDot() {
-  const [pulse, setPulse] = useState(false);
-  useEffect(() => {
-    const interval = setInterval(() => setPulse((p) => !p), 800);
-    return () => clearInterval(interval);
-  }, []);
-  return (
-    <div
-      style={{
-        width: 12,
-        height: 12,
-        borderRadius: "50%",
-        background: "var(--color-gold-primary)",
-        opacity: pulse ? 1 : 0.3,
-        transition: "opacity 0.4s ease",
-      }}
-    />
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════
-// JOIN CODE PAGE — Loading, Countdown, Invalid screens
-// ═════════════════════════════════════════════════════════════════
 export default function JoinCodePage() {
   const params = useParams<{ code: string }>();
   const router = useRouter();
-  const [countdownVal, setCountdownVal] = useState(3);
-  const joinedRef = useRef(false);
+  const { address, logout } = useAuth();
+  const funds = useFundsConfig();
+  const session = useServerSession();
+  const isNativeApp = useIsNativeApp();
+  const { client } = useAbstraxionSigningClient();
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const game = useGame(WS_URL, address, quote?.gameId);
+  const [config, setConfig] = useState<z.infer<typeof ConfigSchema> | null>(null);
+  const [wagerAccepted, setWagerAccepted] = useState(false);
+  const [reserveAccepted, setReserveAccepted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const invite = parseInviteCode(params.code);
+  const code = invite?.id ?? "";
+  const cashCode = invite?.kind === "cash";
+  const moneyAvailable = funds.status === "ready" && funds.config.entryEnabled && Boolean(funds.config.attestedAt) && funds.config.wagerEnabled && funds.config.actionBlockers.wager.length === 0 && funds.config.legalVersions.responsiblePlay !== null && session.status === "ready";
+  const recipientWalletMatches = Boolean(address && quote && address === quote.playerB);
+  const sessionGateMessage = sessionMoneyGateMessage(session.status, session.error);
+  const changeWallet = useCallback(async () => {
+    await logout();
+    window.location.replace(withReturnTo("/login", `/join/${encodeURIComponent(params.code)}`));
+  }, [logout, params.code]);
 
-  const { address, isConnected } = useAuth();
+  const refreshQuote = useCallback(async () => {
+    const response = await authenticatedFetch(`/api/cash-games/quotes/${code}`);
+    if (!response.ok) throw new Error("Cash-game offer was not found, expired, or is not addressed to this wallet.");
+    setQuote(z.object({ quote: QuoteSchema }).parse(await response.json()).quote);
+  }, [code]);
 
-  const {
-    connected,
-    authenticated,
-    status,
-    gameId,
-    opponent,
-    error,
-    joinGame,
-  } = useGame(WS_URL, address);
-
-  const shortAddr = (addr: string | null) => {
-    if (!addr) return "?";
-    if (addr.length <= 12) return addr;
-    return addr.slice(0, 6) + "..." + addr.slice(-4);
-  };
-
-  // Basic code validation
-  const isValidCode = /^[a-zA-Z0-9-]{3,}$/.test(params.code);
-
-  // Join the game once authenticated (not just connected — auth must complete first)
   useEffect(() => {
-    if (authenticated && isValidCode && !joinedRef.current) {
-      joinedRef.current = true;
-      joinGame(params.code);
-    }
-  }, [authenticated, isValidCode, params.code, joinGame]);
-
-  // Determine which screen to show
-  const isError = !isValidCode || !!error;
-  const isPlaying = status === "playing";
-  const isLoading = !isError && !isPlaying;
-
-  // Countdown timer → navigate to match
+    if (isNativeApp || !cashCode || session.status !== "ready") return;
+    void Promise.all([
+      refreshQuote(),
+      fetch(`${API_BASE}/api/cash-games/config`, { credentials: "include" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Cash-game rules are unavailable");
+          return ConfigSchema.parse(await response.json());
+        }),
+    ]).then(([, nextConfig]) => setConfig(nextConfig)).catch((reason: unknown) => setError(readable(reason)));
+  }, [cashCode, isNativeApp, refreshQuote, session.status]);
   useEffect(() => {
-    if (isPlaying && countdownVal > 0) {
-      const timer = setTimeout(() => setCountdownVal((v) => v - 1), 1000);
-      return () => clearTimeout(timer);
+    if (!quote || (quote.state !== "accepted" && quote.state !== "reserving")) return;
+    const interval = window.setInterval(() => {
+      void refreshQuote().catch((reason: unknown) => setError(readable(reason)));
+    }, 2_000);
+    return () => window.clearInterval(interval);
+  }, [quote?.id, quote?.state, refreshQuote]);
+  useEffect(() => { setWagerAccepted(false); setReserveAccepted(false); }, [quote?.id, quote?.quoteHash]);
+
+
+  useEffect(() => {
+    if (invite?.kind === "free" && game.authenticated) game.joinGame(code);
+  }, [code, game.authenticated, game.joinGame, invite?.kind]);
+
+  useEffect(() => {
+    if (game.status === "playing" && game.gameId) {
+      router.push(`/match/${game.gameId}${quote ? `?cashQuote=${quote.id}` : ""}`);
     }
-    if (isPlaying && countdownVal === 0 && gameId) {
-      const navTimer = setTimeout(() => router.push(`/match/${gameId}`), 500);
-      return () => clearTimeout(navTimer);
-    }
-  }, [isPlaying, countdownVal, gameId, router]);
+  }, [game.gameId, game.status, quote?.id, router]);
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        minHeight: "100vh",
-        fontFamily: "var(--font-body)",
-        color: "var(--color-text-primary)",
-      }}
-    >
-      {/* ─── Header ─────────────────────────────────────────── */}
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 24px",
-          borderBottom: "1px solid var(--color-border-subtle)",
-          background: "var(--color-bg-surface)",
-        }}
-      >
-        <button
-          onClick={() => router.push("/join")}
-          style={{
-            background: "none",
-            border: "none",
-            color: "var(--color-text-secondary)",
-            cursor: "pointer",
-            fontSize: "0.875rem",
-            fontWeight: 500,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            fontFamily: "var(--font-body)",
-          }}
-        >
-          &larr; Back
-        </button>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {!connected && (
-            <span style={{ fontSize: "0.6875rem", color: "var(--color-danger)", fontWeight: 600 }}>
-              Reconnecting...
-            </span>
-          )}
-          <span
-            style={{
-              fontSize: "1.0625rem",
-              fontWeight: 700,
-              color: "var(--color-text-primary)",
-              fontFamily: "var(--font-display)",
-            }}
-          >
-            Join Match
-          </span>
-        </div>
-        <div style={{ width: 60 }} /> {/* spacer for centering */}
-      </header>
+  const acceptQuote = useCallback(async () => {
+    if (session.status !== "ready") { setError(sessionGateMessage); return; }
+    if (!quote) { setError("This cash-game action is unavailable until required legal, provider, eligibility, and operational approvals are active."); return; }
+    if (!address || address !== quote.playerB) { setError(`Only the intended recipient can accept this offer. Connect wallet ${quote.playerB} to continue.`); return; }
+    if (isNativeApp || !moneyAvailable || !config?.wagerEnabled || !config.cashTermsVersion || !config.responsiblePlayVersion || !wagerAccepted) { setError("This cash-game action is unavailable until required legal, provider, eligibility, and operational approvals are active."); return; }
+    setBusy(true); setError(null);
+    try {
+      const response = await authenticatedFetch(`/api/cash-games/quotes/${quote.id}/accept`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          quoteHash: quote.quoteHash,
+          consent: {
+            acceptedAt: new Date().toISOString(),
+            cashTermsVersion: config.cashTermsVersion,
+            responsiblePlayVersion: config.responsiblePlayVersion,
+            maximumLossAcknowledged: true,
+            testFundsAcknowledged: config.testFunds,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error("quote acceptance rejected");
+      setWagerAccepted(false);
+      await refreshQuote();
+    } catch (reason) { setError(readable(reason)); }
+    finally { setBusy(false); }
+  }, [address, config, isNativeApp, moneyAvailable, quote, refreshQuote, session.status, sessionGateMessage, wagerAccepted]);
 
-      {/* ─── Main Content ───────────────────────────────────── */}
-      <main
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "flex-start",
-          padding: "40px 24px",
-          overflow: "auto",
-        }}
-      >
-        <div style={{ width: "100%", maxWidth: 480 }}>
-          {/* ═══ LOADING ══════════════════════════════════════ */}
-          {isLoading && (
-            <div
-              className="pt-6 sm:pt-[60px]"
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 24,
-              }}
-            >
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <PulsingDot />
-                <PulsingDot />
-                <PulsingDot />
-              </div>
-              <div style={{ textAlign: "center" }}>
-                <h2
-                  className="text-xl sm:text-[26px]"
-                  style={{
-                    fontWeight: 700,
-                    margin: "0 0 8px",
-                    letterSpacing: "-0.02em",
-                    fontFamily: "var(--font-display)",
-                    color: "var(--color-text-primary)",
-                  }}
-                >
-                  Joining Match...
-                </h2>
-                <p
-                  style={{
-                    fontSize: "0.875rem",
-                    color: "var(--color-text-secondary)",
-                    margin: 0,
-                  }}
-                >
-                  Connecting to game server
-                </p>
-              </div>
-              <div
-                style={{
-                  fontSize: "0.8125rem",
-                  fontFamily: "var(--font-mono)",
-                  color: "var(--color-text-muted)",
-                  padding: "8px 16px",
-                  background: "var(--color-bg-base)",
-                  borderRadius: 6,
-                  border: "1px solid var(--color-border-subtle)",
-                  wordBreak: "break-all",
-                }}
-              >
-                {params.code}
-              </div>
-            </div>
-          )}
+  const reserve = useCallback(async () => {
+    if (session.status !== "ready") { setError(sessionGateMessage); return; }
+    if (isNativeApp || !moneyAvailable || !quote || !reserveAccepted || !address || !client || !VERUSD_DENOM || !VERUSD_ESCROW_CONTRACT) { setError("This cash-game action is unavailable until required approvals are active. No transaction was sent."); return; }
+    setBusy(true); setError(null);
+    try {
+      const result = TxResultSchema.parse(await client.execute(address, VERUSD_ESCROW_CONTRACT, { deposit_reserve: { game_id: quote.gameId } }, "auto", undefined, [{ denom: VERUSD_DENOM, amount: quote.reservePerPlayerMicroUsd }]));
+      const response = await authenticatedFetch(`/api/cash-games/quotes/${quote.id}/reserve-confirmation`, { method: "POST", headers: headers(), body: JSON.stringify({ txHash: result.transactionHash }) });
+      if (!response.ok) throw new Error("reserve confirmation rejected");
+      setReserveAccepted(false);
+      await refreshQuote();
+    } catch (reason) { setError(readable(reason)); }
+    finally { setBusy(false); }
+  }, [address, client, isNativeApp, moneyAvailable, quote, refreshQuote, reserveAccepted, session.status, sessionGateMessage]);
 
-          {/* ═══ COUNTDOWN ══════════════════════════════════ */}
-          {isPlaying && (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 24,
-                paddingTop: 20,
-              }}
-            >
-              {/* VS display */}
-              <div
-                className="gap-4 sm:gap-6"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
-                <div style={{ textAlign: "center" }}>
-                  <div
-                    style={{
-                      position: "relative",
-                      display: "inline-block",
-                    }}
-                  >
-                    <Avatar name={shortAddr(address)} size={64} />
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "0.875rem",
-                      fontWeight: 700,
-                      marginTop: 8,
-                      color: "var(--color-text-primary)",
-                    }}
-                  >
-                    {shortAddr(address)}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    fontSize: "1.125rem",
-                    fontWeight: 700,
-                    color: "var(--color-gold-dark)",
-                    padding: "0 8px",
-                  }}
-                >
-                  vs
-                </div>
-                <div style={{ textAlign: "center" }}>
-                  <div
-                    style={{
-                      position: "relative",
-                      display: "inline-block",
-                    }}
-                  >
-                    <Avatar name={shortAddr(opponent)} size={64} />
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "0.875rem",
-                      fontWeight: 700,
-                      marginTop: 8,
-                      color: "var(--color-text-primary)",
-                    }}
-                  >
-                    {shortAddr(opponent)}
-                  </div>
-                </div>
-              </div>
+  const recoverSandboxRefund = useCallback(async () => {
+    if (!quote) return;
+    setBusy(true); setError(null);
+    try {
+      const response = await authenticatedFetch(`/__sandbox/cash-games/quotes/${quote.id}/refund-recovery`, {
+        method: "POST",
+        headers: headers(),
+      });
+      if (!response.ok) throw new Error("sandbox refund recovery rejected");
+      const nextQuote = z.object({ quote: QuoteSchema }).parse(await response.json()).quote;
+      setQuote(nextQuote);
+      setNotice(nextQuote.state === "refunded"
+        ? "Sandbox refund completed. The durable receipt now records the refund."
+        : "Sandbox refund recovery is queued. The durable receipt will refresh when the worker completes it.");
+    } catch (reason) { setError(readable(reason)); }
+    finally { setBusy(false); }
+  }, [quote]);
 
-              <div style={{ textAlign: "center" }}>
-                <h2
-                  className="text-2xl sm:text-[32px]"
-                  style={{
-                    fontWeight: 700,
-                    margin: "0 0 6px",
-                    letterSpacing: "-0.02em",
-                    fontFamily: "var(--font-display)",
-                    color: "var(--color-text-primary)",
-                  }}
-                >
-                  Match Starting
-                </h2>
-                <p
-                  style={{
-                    fontSize: "0.875rem",
-                    color: "var(--color-text-secondary)",
-                    margin: 0,
-                  }}
-                >
-                  Casual match &mdash; no stakes
-                </p>
-              </div>
 
-              {/* Countdown */}
-              <div
-                className="text-5xl sm:text-7xl md:text-[96px]"
-                style={{
-                  fontWeight: 700,
-                  color: "var(--color-gold-primary)",
-                  fontFamily: "var(--font-mono)",
-                  letterSpacing: "-0.02em",
-                  textShadow: "var(--shadow-gold)",
-                }}
-              >
-                {countdownVal > 0 ? countdownVal : "GO"}
-              </div>
-
-              {/* Provably fair badge */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: "0.6875rem",
-                  color: "var(--color-text-secondary)",
-                }}
-              >
-                <ShieldIcon size={14} />
-                Provably fair dice &middot; Game board loading...
-              </div>
-            </div>
-          )}
-
-          {/* ═══ INVALID CODE / ERROR ════════════════════════ */}
-          {isError && (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 20,
-                paddingTop: 40,
-              }}
-            >
-              {/* Error icon */}
-              <div
-                style={{
-                  width: 64,
-                  height: 64,
-                  borderRadius: "50%",
-                  background: "var(--color-bg-elevated)",
-                  border: "2px solid var(--color-border-subtle)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "1.75rem",
-                  color: "var(--color-text-muted)",
-                }}
-              >
-                &#x2715;
-              </div>
-
-              <div style={{ textAlign: "center" }}>
-                <h2
-                  style={{
-                    fontSize: "1.75rem",
-                    fontWeight: 700,
-                    margin: "0 0 8px",
-                    letterSpacing: "-0.02em",
-                    fontFamily: "var(--font-display)",
-                    color: "var(--color-text-primary)",
-                  }}
-                >
-                  Match Not Found
-                </h2>
-                <p
-                  style={{
-                    fontSize: "0.875rem",
-                    color: "var(--color-text-secondary)",
-                    margin: 0,
-                    maxWidth: 320,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {error ||
-                    "This code may have expired or the host may have cancelled the match. Check with your opponent and try again."}
-                </p>
-              </div>
-
-              <Card
-                style={{
-                  width: "100%",
-                  textAlign: "center",
-                  padding: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "0.625rem",
-                    color: "var(--color-text-muted)",
-                    fontWeight: 600,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    marginBottom: 6,
-                  }}
-                >
-                  Entered Code
-                </div>
-                <div
-                  style={{
-                    fontSize: "1.125rem",
-                    fontWeight: 700,
-                    color: "var(--color-text-muted)",
-                    fontFamily: "var(--font-mono)",
-                    letterSpacing: "0.04em",
-                    textDecoration: "line-through",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {params.code}
-                </div>
-              </Card>
-
-              <div
-                style={{ display: "flex", gap: 10, width: "100%" }}
-              >
-                <Link href="/join" style={{ flex: 1, textDecoration: "none" }}>
-                  <button
-                    style={{
-                      width: "100%",
-                      padding: "14px 20px",
-                      borderRadius: 6,
-                      border: "none",
-                      background:
-                        "linear-gradient(135deg, var(--color-gold-primary) 0%, var(--color-gold-light) 100%)",
-                      color: "var(--color-accent-fg)",
-                      fontSize: "0.875rem",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      fontFamily: "var(--font-body)",
-                      boxShadow: "var(--shadow-gold)",
-                    }}
-                  >
-                    Try Another Code
-                  </button>
-                </Link>
-                <Link href="/" style={{ flex: 1, textDecoration: "none" }}>
-                  <button
-                    style={{
-                      width: "100%",
-                      padding: "14px 20px",
-                      borderRadius: 6,
-                      border: "1.5px solid var(--color-border-subtle)",
-                      background: "var(--color-bg-surface)",
-                      color: "var(--color-text-secondary)",
-                      fontSize: "0.875rem",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      fontFamily: "var(--font-body)",
-                    }}
-                  >
-                    Back to Lobby
-                  </button>
-                </Link>
-              </div>
-            </div>
-          )}
-        </div>
+  if (!invite) {
+    return (
+      <main className="mx-auto max-w-xl space-y-4 p-4 sm:p-6">
+        <h1 className="font-display text-3xl">Invalid invite</h1>
+        <p>This link does not identify a typed free or cash-game invite.</p>
       </main>
-    </div>
+    );
+  }
+
+  if (!cashCode) {
+    return (
+      <main className="mx-auto max-w-xl space-y-4 p-4 sm:p-6">
+        <h1 className="font-display text-3xl">Join free match</h1>
+        {game.error ? <p role="alert">{game.error}</p> : <p>{game.authenticated ? "Joining the free match…" : "Connect your wallet and authorize the secure session to join."}</p>}
+      </main>
+    );
+  }
+  if (isNativeApp) {
+    return (
+      <main className="mx-auto max-w-xl space-y-4 p-4 sm:p-6">
+        <h1 className="font-display text-3xl">Cash games are unavailable in the app</h1>
+        <p>The native app supports free play only. This cash-game link did not reserve funds or join a game.</p>
+      </main>
+    );
+  }
+  return (
+    <main className="mx-auto max-w-xl space-y-5 p-4 sm:p-6" aria-live="polite">
+      <h1 className="font-display text-3xl">Review cash-game offer</h1>
+      {error && <p role="alert" className="rounded border border-red-700/40 p-3 text-sm">{error}</p>}
+      {notice && <p role="status" className="rounded border border-emerald-700/40 p-3 text-sm">{notice}</p>}
+      {session.status !== "ready" ? (
+        <section className="space-y-3 rounded border border-[var(--color-warning)] p-3 text-sm">
+          <p role={session.status === "error" ? "alert" : "status"}>{sessionGateMessage}</p>
+          {session.status === "error" && (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="btn-primary min-h-11" onClick={session.retry}>Retry authorization</button>
+              <button type="button" className="min-h-11 rounded border px-4 py-2" onClick={() => void changeWallet()}>Change wallet</button>
+            </div>
+          )}
+        </section>
+      ) : !quote ? (
+        <p>Loading the private offer for this wallet…</p>
+      ) : (
+        <section className="space-y-4 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-5">
+          {config?.testFunds && <p role="status" className="rounded border border-[var(--color-warning)] p-3 text-sm font-semibold">TEST FUNDS ONLY — this quote, reserve, and receipt have no cash value and cannot be withdrawn as real money.</p>}
+          <dl className="grid gap-2 text-sm">
+            <div><dt className="inline text-[var(--color-text-muted)]">Offer from (opponent): </dt><dd className="inline break-all font-mono">{quote.playerA}</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Recipient (you): </dt><dd className="inline break-all font-mono">{quote.playerB}</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Connected wallet: </dt><dd className="inline break-all font-mono">{address ?? "No wallet connected"}</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Stake per point: </dt><dd className="inline font-mono">${display(quote.stakeMicroUsd)} in verUSD</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Maximum reserve: </dt><dd className="inline font-mono">${display(quote.reservePerPlayerMicroUsd)} in verUSD</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Cube cap: </dt><dd className="inline">×{quote.cubeCap}</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Rake: </dt><dd className="inline">{quote.rakeBps / 100}%</dd></div>
+            <div><dt className="inline text-[var(--color-text-muted)]">Expires: </dt><dd className="inline">{new Date(quote.expiresAt).toLocaleString()}</dd></div>
+          </dl>
+          <p className="text-sm font-semibold">Custody: the Xion {quote.asset.symbol} escrow contract holds verified reserves until settlement or refund. {quote.testFunds ? "Test funds — no cash value" : "Production verUSD"}.</p>
+          <CashQuoteDisclosure quote={quote} />
+          {!recipientWalletMatches && <p role="alert" className="rounded border border-red-700/40 p-3 text-sm">Only Recipient (you), wallet {quote.playerB}, can accept this offer. {address ? `Connected wallet ${address} does not match.` : "Connect the recipient wallet to continue."}</p>}
+          {!moneyAvailable && <p role="alert" className="rounded border border-[var(--color-warning)] p-3 text-sm">This cash-game action is unavailable until its required legal documents, provider integrations, eligibility controls, and operational approvals are active. No funds will be reserved.</p>}
+          {(quote.state === "offered" || quote.state === "accepted") && (
+            <>
+              <label className="flex items-start gap-3 text-sm">
+                <input className="mt-1 h-5 w-5" type="checkbox" checked={wagerAccepted} onChange={(event) => setWagerAccepted(event.target.checked)} />
+                <span>I, Recipient (you) ({quote.playerB}), accept this exact wager from Offer from (opponent) ({quote.playerA}): ${display(quote.stakeMicroUsd)} per point, maximum reserve ${display(quote.reservePerPlayerMicroUsd)}, cube cap ×{quote.cubeCap}, {quote.rakeBps / 100}% rake, and quote {quote.quoteHash}. I reviewed the <Link className="underline" href="/terms">Terms</Link>, <Link className="underline" href="/privacy">Privacy Notice</Link>, and <Link className="underline" href="/responsible-play">Responsible Play</Link> policy. {quote.testFunds ? "Test funds — no cash value" : "Production verUSD"}.</span>
+              </label>
+              <button disabled={!moneyAvailable || !recipientWalletMatches || !wagerAccepted || busy || !config?.wagerEnabled} onClick={() => void acceptQuote()} className="btn-primary min-h-11 disabled:opacity-50">Accept this exact wager</button>
+            </>
+          )}
+          {quote.state === "reserving" && quote.fundingDeadline !== null && (
+            <>
+              <label className="flex items-start gap-3 text-sm">
+                <input className="mt-1 h-5 w-5" type="checkbox" checked={reserveAccepted} onChange={(event) => setReserveAccepted(event.target.checked)} />
+                <span>I confirm sending exactly ${display(quote.reservePerPlayerMicroUsd)} {quote.asset.symbol} ({quote.testFunds ? "Test funds — no cash value" : "production funds"}) from my wallet to the Xion escrow contract for quote {quote.quoteHash}. This transfer is not reversible.</span>
+              </label>
+              <button disabled={!moneyAvailable || busy || !reserveAccepted} onClick={() => void reserve()} className="btn-primary min-h-11 disabled:opacity-50">Reserve ${display(quote.reservePerPlayerMicroUsd)} in {quote.asset.symbol}</button>
+            </>
+          )}
+          {quote.state === "active" && <button onClick={() => router.push(`/match/${quote.gameId}?cashQuote=${quote.id}`)} className="btn-primary min-h-11">Review funded start</button>}
+          {browserSandboxRefundRecovery && (quote.state === "active" || quote.state === "review") && (
+            <section className="mt-3 space-y-2 rounded border border-[var(--color-warning)] p-3 text-sm">
+              <p>Development sandbox only: queue the normal cash-game refund recovery flow.</p>
+              <button disabled={busy} onClick={() => void recoverSandboxRefund()} className="min-h-11 rounded border px-4 py-2 disabled:opacity-50">Recover sandbox refund</button>
+            </section>
+          )}
+          {["settlement_pending", "settled", "refunded", "review", "expired"].includes(quote.state) && (
+            <p className="text-sm">This offer is no longer available to join as an active cash game.</p>
+          )}
+        </section>
+      )}
+    </main>
   );
 }

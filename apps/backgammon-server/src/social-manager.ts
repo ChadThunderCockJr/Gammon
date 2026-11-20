@@ -1,20 +1,41 @@
 import { v4 as uuid } from "uuid";
 import type { WebSocket } from "ws";
-import type { ClientMessage, ServerMessage, ServerGame } from "./types.js";
-import type { GameManager } from "./game-manager.js";
+import type { ChallengeTerms, ClientMessage, ServerMessage, ServerGame } from "./types.js";
 import * as store from "./social-store.js";
+import * as durableStore from "./social-store-pg.js";
 import { logger } from "./logger.js";
+import { encryptSensitiveJson, sensitivePayloadHash } from "./finance-crypto.js";
+import { sendWebSocketJson } from "./ws-send.js";
+import { CHALLENGE_EXPIRY_SEC } from "./config.js";
+import { publishGlobal } from "./pubsub.js";
+
+interface DistributedChallengeEvent {
+  readonly type: "friend_challenge" | "friend_challenge_accepted";
+  readonly source: string;
+  readonly recipient: string;
+  readonly message: ServerMessage;
+}
+
+function isDistributedChallengeEvent(event: unknown): event is DistributedChallengeEvent {
+  if (
+    !event ||
+    typeof event !== "object" ||
+    !("type" in event) ||
+    (event.type !== "friend_challenge" && event.type !== "friend_challenge_accepted")
+  ) return false;
+  if (!("source" in event) || typeof event.source !== "string") return false;
+  if (!("recipient" in event) || typeof event.recipient !== "string") return false;
+  return "message" in event && !!event.message && typeof event.message === "object" && "type" in event.message;
+}
 
 export class SocialManager {
   constructor(
     private connections: Map<WebSocket, { address: string; rating: number }>,
-    private gameManager: GameManager,
+    private instanceId: string,
   ) {}
 
-  private send(ws: WebSocket, msg: ServerMessage): void {
-    if (ws.readyState === 1) {
-      ws.send(JSON.stringify(msg));
-    }
+  private send(ws: WebSocket, msg: ServerMessage): boolean {
+    return sendWebSocketJson(ws, msg);
   }
 
   private findWsByAddress(address: string): WebSocket | null {
@@ -31,10 +52,7 @@ export class SocialManager {
   private sendToAll(address: string, msg: ServerMessage): number {
     let count = 0;
     for (const [ws, conn] of this.connections) {
-      if (conn.address === address && ws.readyState === 1) {
-        this.send(ws, msg);
-        count++;
-      }
+      if (conn.address === address && this.send(ws, msg)) count++;
     }
     return count;
   }
@@ -60,11 +78,17 @@ export class SocialManager {
       case "get_activity":
         return this.handleGetActivity(ws, address);
       case "challenge_friend":
-        return this.handleChallengeFriend(ws, address, msg.to_address);
+        return this.handleChallengeFriend(ws, address, msg.to_address, msg.config);
       case "accept_challenge":
         return this.handleAcceptChallenge(ws, address, msg.challenge_id);
       case "decline_challenge":
         return this.handleDeclineChallenge(ws, address, msg.challenge_id);
+      case "block_user":
+        return this.handleBlockUser(ws, address, msg.target_address, msg.request_id);
+      case "unblock_user":
+        return this.handleUnblockUser(ws, address, msg.target_address);
+      case "report_user":
+        return this.handleReportUser(ws, address, msg.target_address, msg.category, msg.description ?? "", msg.request_id);
     }
   }
 
@@ -81,6 +105,33 @@ export class SocialManager {
       display_name: profile?.displayName || "",
     });
   }
+  /** Durable replay makes challenge delivery independent of the notifying replica. */
+  async replayChallenges(ws: WebSocket, address: string): Promise<void> {
+    for (const challenge of await store.getPendingChallengesFor(address)) {
+      this.send(ws, {
+        type: "challenge_received",
+        challenge_id: challenge.id,
+        from_address: challenge.from,
+        from_name: challenge.fromName,
+        created_at: challenge.createdAt,
+        expires_at: challenge.expiresAt,
+        config: challenge.config,
+      });
+    }
+    for (const challenge of await store.getAcceptedChallengesFor(address)) {
+      if (!challenge.gameId) continue;
+      this.send(ws, {
+        type: "challenge_accepted",
+        challenge_id: challenge.id,
+        game_id: challenge.gameId,
+      });
+    }
+  }
+  deliverDistributedChallenge(event: unknown): void {
+    if (!isDistributedChallengeEvent(event) || event.source === this.instanceId) return;
+    this.sendToAll(event.recipient, event.message);
+  }
+
 
   private async handleSetUsername(ws: WebSocket, address: string, username: string): Promise<void> {
     const result = await store.setUsername(address, username);
@@ -94,12 +145,12 @@ export class SocialManager {
     }
   }
 
-  private async handleSearchPlayers(ws: WebSocket, _address: string, query: string): Promise<void> {
+  private async handleSearchPlayers(ws: WebSocket, address: string, query: string): Promise<void> {
     if (query.length < 2 || query.length > 50) {
       this.send(ws, { type: "search_results", results: [] });
       return;
     }
-    const results = await store.searchPlayers(query);
+    const results = await store.searchPlayers(query, address);
     this.send(ws, { type: "search_results", results });
   }
 
@@ -144,10 +195,14 @@ export class SocialManager {
     const outgoingRequests = await store.getOutgoingRequests(address);
 
     const rawChallenges = await store.getPendingChallengesFor(address);
-    const pendingChallenges = rawChallenges.map((c) => ({
-      challenge_id: c.id,
-      from_address: c.from,
-      from_name: c.fromName,
+    const blockedUsers = await store.getBlockedUsers(address);
+    const pendingChallenges = rawChallenges.map((challenge) => ({
+      challenge_id: challenge.id,
+      from_address: challenge.from,
+      from_name: challenge.fromName,
+      created_at: challenge.createdAt,
+      expires_at: challenge.expiresAt,
+      config: challenge.config,
     }));
 
     this.send(ws, {
@@ -155,6 +210,7 @@ export class SocialManager {
       friends,
       incoming_requests: incomingRequests,
       outgoing_requests: outgoingRequests,
+      blocked_users: blockedUsers,
       pending_challenges: pendingChallenges,
     });
   }
@@ -165,6 +221,10 @@ export class SocialManager {
       return;
     }
 
+    if (await store.isBlockedEitherDirection(address, toAddress)) {
+      this.send(ws, { type: "error", message: "You cannot contact this player" });
+      return;
+    }
     const alreadyFriends = await store.areFriends(address, toAddress);
     if (alreadyFriends) {
       this.send(ws, { type: "error", message: "Already friends" });
@@ -202,8 +262,15 @@ export class SocialManager {
   }
 
   private async handleAcceptFriendRequest(ws: WebSocket, address: string, fromAddress: string): Promise<void> {
-    await store.removeFriendRequest(fromAddress, address);
-    await store.addFriend(address, fromAddress);
+    if (await store.isBlockedEitherDirection(address, fromAddress)) {
+      await store.removeFriendRequest(fromAddress, address);
+      this.send(ws, { type: "error", message: "This friend request is unavailable" });
+      return;
+    }
+    if (!(await store.acceptFriendRequest(fromAddress, address))) {
+      this.send(ws, { type: "error", message: "Friend request no longer exists" });
+      return;
+    }
 
     const now = Date.now();
     const myProfile = await store.getProfile(address);
@@ -255,13 +322,117 @@ export class SocialManager {
     await this.handleGetFriends(ws, address);
   }
 
+  private async handleBlockUser(ws: WebSocket, address: string, targetAddress: string, requestId: string): Promise<void> {
+    if (address === targetAddress) {
+      this.send(ws, { type: "error", message: "You cannot block yourself" });
+      return;
+    }
+    if (!await store.blockUser(address, targetAddress)) {
+      this.send(ws, { type: "error", message: "Could not block this player" });
+      return;
+    }
+    this.send(ws, { type: "user_blocked", target_address: targetAddress, request_id: requestId });
+    await this.handleGetFriends(ws, address);
+    const targetWs = this.findWsByAddress(targetAddress);
+    if (targetWs) {
+      this.send(targetWs, { type: "friend_removed", address });
+      await this.handleGetFriends(targetWs, targetAddress);
+    }
+  }
+
+  private async handleUnblockUser(ws: WebSocket, address: string, targetAddress: string): Promise<void> {
+    if (!await store.unblockUser(address, targetAddress)) {
+      this.send(ws, { type: "error", message: "This player is not blocked" });
+      return;
+    }
+    this.send(ws, { type: "user_unblocked", target_address: targetAddress });
+    await this.handleGetFriends(ws, address);
+  }
+
+  private async handleReportUser(
+    ws: WebSocket,
+    address: string,
+    targetAddress: string,
+    category: "cheating" | "harassment" | "inappropriate_name" | "other",
+    description: string,
+    requestId: string,
+  ): Promise<void> {
+    if (address === targetAddress) {
+      this.send(ws, { type: "error", message: "You cannot report yourself" });
+      return;
+    }
+    if (description.length > 500) {
+      this.send(ws, { type: "error", message: "Report description is too long" });
+      return;
+    }
+    let report: { id: string } | null;
+    try {
+      const reportId = uuid();
+      report = await store.createUserReport({
+        id: reportId,
+        reporter: address,
+        requestId,
+        target: targetAddress,
+        category,
+        payloadHash: sensitivePayloadHash({ target: targetAddress, category, description }),
+        descriptionEncrypted: encryptSensitiveJson({ description }, reportId),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "REPORT_IDEMPOTENCY_CONFLICT") {
+        this.send(ws, {
+          type: "error",
+          code: "REPORT_IDEMPOTENCY_CONFLICT",
+          message: "This report request was already used with different details",
+        });
+        return;
+      }
+      if (error instanceof Error && error.message === "REPORT_RATE_LIMITED") {
+        this.send(ws, {
+          type: "error",
+          code: "REPORT_RATE_LIMITED",
+          message: "Too many reports submitted",
+        });
+        return;
+      }
+      this.send(ws, {
+        type: "error",
+        code: "REPORT_SUBMISSION_UNAVAILABLE",
+        message: "Report submission is temporarily unavailable",
+      });
+      return;
+    }
+    if (!report) {
+      this.send(ws, {
+        type: "error",
+        code: "REPORT_SUBMISSION_UNAVAILABLE",
+        message: "Report submission is temporarily unavailable",
+      });
+      return;
+    }
+    this.send(ws, {
+      type: "user_reported",
+      target_address: targetAddress,
+      report_id: report.id,
+      request_id: requestId,
+    });
+  }
+
   private async handleGetActivity(ws: WebSocket, address: string): Promise<void> {
     const items = await store.getActivity(address);
     this.send(ws, { type: "activity_feed", items });
   }
 
-  private async handleChallengeFriend(ws: WebSocket, address: string, toAddress: string): Promise<void> {
+  private async handleChallengeFriend(
+    ws: WebSocket,
+    address: string,
+    toAddress: string,
+    config: ChallengeTerms,
+  ): Promise<void> {
     logger.info("Challenge requested", { from: address, to: toAddress });
+    if (await store.isBlockedEitherDirection(address, toAddress)) {
+      this.send(ws, { type: "error", message: "You cannot contact this player" });
+      return;
+    }
 
     const areFriends = await store.areFriends(address, toAddress);
     if (!areFriends) {
@@ -279,15 +450,21 @@ export class SocialManager {
 
     const profile = await store.getProfile(address);
     const challengeId = uuid();
+    const createdAt = Date.now();
     const challenge: store.Challenge = {
       id: challengeId,
       from: address,
       fromName: profile?.displayName || "",
       to: toAddress,
-      createdAt: Date.now(),
+      createdAt,
+      expiresAt: createdAt + CHALLENGE_EXPIRY_SEC * 1_000,
+      config,
     };
 
-    await store.createChallenge(challenge);
+    if (!await store.createChallenge(challenge)) {
+      this.send(ws, { type: "error", message: "Could not create this challenge" });
+      return;
+    }
     logger.info("Challenge created", { challengeId, from: address, to: toAddress });
 
     const deliveredCount = this.sendToAll(toAddress, {
@@ -295,58 +472,76 @@ export class SocialManager {
       challenge_id: challengeId,
       from_address: address,
       from_name: profile?.displayName || "",
+      created_at: challenge.createdAt,
+      expires_at: challenge.expiresAt,
+      config,
+    });
+    void publishGlobal({
+      type: "friend_challenge",
+      source: this.instanceId,
+      recipient: toAddress,
+      message: {
+        type: "challenge_received",
+        challenge_id: challengeId,
+        from_address: address,
+        from_name: profile?.displayName || "",
+        created_at: challenge.createdAt,
+        expires_at: challenge.expiresAt,
+        config,
+      },
     });
     if (deliveredCount > 0) {
       logger.info("Challenge delivered", { challengeId, to: toAddress, sockets: deliveredCount });
     } else {
       logger.warn("Challenge created but no open WebSocket found for target", { challengeId, to: toAddress });
     }
+    this.send(ws, {
+      type: "challenge_sent",
+      challenge_id: challengeId,
+      to_address: toAddress,
+      to_name: (await store.getProfile(toAddress))?.displayName || "",
+      created_at: challenge.createdAt,
+      expires_at: challenge.expiresAt,
+      config,
+    });
   }
 
   private async handleAcceptChallenge(ws: WebSocket, address: string, challengeId: string): Promise<void> {
     logger.info("Accept challenge", { challengeId, address });
-    const challenge = await store.getChallenge(challengeId);
-    if (!challenge || challenge.to !== address) {
-      logger.warn("Challenge not found or expired", { challengeId, address, found: !!challenge });
+    const challenge = await store.acceptChallenge(challengeId, address, this.instanceId);
+    if (!challenge?.gameId) {
       this.send(ws, { type: "error", message: "Challenge not found or expired" });
       return;
     }
-
-    await store.deleteChallenge(challengeId);
-
-    // Create a game and join both players
-    const game = this.gameManager.createGame(0);
-    const challengerWs = this.findWsByAddress(challenge.from);
-    const conn = this.connections.get(ws);
-    logger.info("Creating game for challenge", { gameId: game.id, challengerFound: !!challengerWs, acceptorFound: !!conn });
-
-    // Don't join players to the game yet — they need to connect via the game
-    // WebSocket first (useGame hook). Just notify both sides to navigate.
     const acceptMsg: ServerMessage = {
       type: "challenge_accepted",
       challenge_id: challengeId,
-      game_id: game.id,
+      game_id: challenge.gameId,
     };
-
-    // Notify the acceptor
-    this.send(ws, acceptMsg);
-
-    // Notify the challenger
+    this.sendToAll(challenge.to, acceptMsg);
     this.sendToAll(challenge.from, acceptMsg);
-
-    logger.info("Challenge accepted, game created", { challengeId, gameId: game.id, from: challenge.from, to: address });
+    logger.info("Challenge accepted and durably published", {
+      challengeId,
+      gameId: challenge.gameId,
+      from: challenge.from,
+      to: challenge.to,
+    });
+    for (const recipient of [challenge.from, challenge.to]) {
+      void publishGlobal({
+        type: "friend_challenge_accepted",
+        source: this.instanceId,
+        recipient,
+        message: acceptMsg,
+      });
+    }
   }
 
   private async handleDeclineChallenge(ws: WebSocket, address: string, challengeId: string): Promise<void> {
     const challenge = await store.getChallenge(challengeId);
     if (!challenge || challenge.to !== address) return;
-
-    await store.deleteChallenge(challengeId);
-
-    const challengerWs = this.findWsByAddress(challenge.from);
-    if (challengerWs) {
-      this.send(challengerWs, { type: "challenge_declined", challenge_id: challengeId });
-    }
+    await store.deleteChallenge(challengeId, address);
+    this.send(ws, { type: "challenge_declined", challenge_id: challengeId });
+    this.sendToAll(challenge.from, { type: "challenge_declined", challenge_id: challengeId });
   }
 
   // ── Presence Broadcasting ──────────────────────────────────────
@@ -365,71 +560,47 @@ export class SocialManager {
 
   // ── Match Result Recording ─────────────────────────────────────
 
-  async recordMatchResult(game: ServerGame, winner: string, resultType: string): Promise<void> {
+  async recordMatchResult(
+    game: ServerGame,
+    winner: "white" | "black",
+    resultType: string,
+  ): Promise<void> {
     const whiteAddr = game.playerWhite?.address;
     const blackAddr = game.playerBlack?.address;
     if (!whiteAddr || !blackAddr) return;
 
-    const now = Date.now();
-    const whiteProfile = await store.getProfile(whiteAddr);
-    const blackProfile = await store.getProfile(blackAddr);
+    const [whiteProfile, blackProfile] = await Promise.all([
+      store.getProfile(whiteAddr),
+      store.getProfile(blackAddr),
+    ]);
     const whiteName = whiteProfile?.displayName || whiteAddr.slice(0, 12);
     const blackName = blackProfile?.displayName || blackAddr.slice(0, 12);
-
-    // Record for white
-    await store.recordMatchResult(whiteAddr, {
+    const wagerAmount = Number.isSafeInteger(game.wagerAmount) && game.wagerAmount >= 0
+      ? BigInt(game.wagerAmount)
+      : 0n;
+    const committed = await durableStore.applyCompletedGameEffect({
       gameId: game.id,
-      opponent: blackAddr,
-      opponentName: blackName,
-      result: winner === "white" ? "W" : "L",
+      whiteAddress: whiteAddr,
+      blackAddress: blackAddr,
+      whiteName,
+      blackName,
+      winner,
       resultType,
-      timestamp: now,
+      wagerAmount,
     });
+    if (!committed.applied) return;
 
-    // Record for black
-    await store.recordMatchResult(blackAddr, {
-      gameId: game.id,
-      opponent: whiteAddr,
-      opponentName: whiteName,
-      result: winner === "black" ? "W" : "L",
-      resultType,
-      timestamp: now,
-    });
-
-    // Update ratings and stats
-    const winnerAddr = winner === "white" ? whiteAddr : blackAddr;
-    const loserAddr = winner === "white" ? blackAddr : whiteAddr;
-    await store.updateRatings(winnerAddr, loserAddr, resultType);
-    await store.updateStats(winnerAddr, "W");
-    await store.updateStats(loserAddr, "L");
-
-    // Activity entries
+    const now = Date.now();
     if (winner === "white") {
-      await store.addActivity(whiteAddr, {
-        type: "match",
-        text: `You defeated ${blackName}`,
-        result: "W",
-        timestamp: now,
-      });
-      await store.addActivity(blackAddr, {
-        type: "match",
-        text: `${whiteName} defeated you`,
-        result: "L",
-        timestamp: now,
-      });
+      await Promise.all([
+        store.addActivity(whiteAddr, { type: "match", text: `You defeated ${blackName}`, result: "W", timestamp: now }),
+        store.addActivity(blackAddr, { type: "match", text: `${whiteName} defeated you`, result: "L", timestamp: now }),
+      ]);
     } else {
-      await store.addActivity(blackAddr, {
-        type: "match",
-        text: `You defeated ${whiteName}`,
-        result: "W",
-        timestamp: now,
-      });
-      await store.addActivity(whiteAddr, {
-        type: "match",
-        text: `${blackName} defeated you`,
-        result: "L",
-        timestamp: now,
-      });
+      await Promise.all([
+        store.addActivity(blackAddr, { type: "match", text: `You defeated ${whiteName}`, result: "W", timestamp: now }),
+        store.addActivity(whiteAddr, { type: "match", text: `${blackName} defeated you`, result: "L", timestamp: now }),
+      ]);
     }
   }
 }

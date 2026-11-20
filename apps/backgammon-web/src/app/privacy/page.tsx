@@ -1,85 +1,31 @@
-import { Metadata } from "next";
+import Link from "next/link";
+import { sanitizeReturnTo, withReturnTo } from "@/lib/return-to";
 
-export const metadata: Metadata = {
-  title: "Privacy Policy — Gammon",
-};
+const section: React.CSSProperties = { color: "var(--color-text-primary)", fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 };
+const legalLink = "inline-flex min-h-11 items-center rounded px-2 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
 
-export default function PrivacyPage() {
-  return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: "48px 24px", color: "#1a1a2e", fontFamily: "system-ui, sans-serif", lineHeight: 1.7 }}>
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Privacy Policy</h1>
-      <p style={{ color: "#666", marginBottom: 32 }}>Last updated: March 17, 2026</p>
-
-      <p>
-        Gammon (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) operates the Gammon mobile application and website
-        (gammon.nyc). This page informs you of our policies regarding the collection, use, and
-        disclosure of personal information when you use our Service.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Information We Collect</h2>
-      <p>
-        <strong>Blockchain Address.</strong> When you use Gammon, you provide your XION blockchain
-        wallet address. This is a public blockchain identifier and is not personally identifiable
-        information on its own.
-      </p>
-      <p>
-        <strong>Game Data.</strong> We store game states, moves, dice rolls, and match results on
-        our servers for the duration of active games. Dice roll proofs are retained so players can
-        independently verify fairness.
-      </p>
-      <p>
-        <strong>Connection Data.</strong> We collect standard server logs (IP address, connection
-        timestamps) for security and abuse prevention. These logs are automatically deleted after
-        30 days.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Information We Do Not Collect</h2>
-      <ul style={{ paddingLeft: 24 }}>
-        <li>We do not collect your name, email address, or phone number.</li>
-        <li>We do not use analytics or tracking SDKs.</li>
-        <li>We do not use cookies for advertising or tracking purposes.</li>
-        <li>We do not sell or share your information with third parties.</li>
-      </ul>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>How We Use Your Information</h2>
-      <ul style={{ paddingLeft: 24 }}>
-        <li>To provide and maintain the game service</li>
-        <li>To match you with other players</li>
-        <li>To verify dice roll fairness using drand distributed randomness</li>
-        <li>To prevent abuse and enforce fair play</li>
-      </ul>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Data Retention</h2>
-      <p>
-        Active game data is stored for the duration of the game session. Completed game results
-        and dice proofs may be retained indefinitely to support fairness verification. Server logs
-        are deleted after 30 days.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Third-Party Services</h2>
-      <p>
-        Gammon uses <strong>drand</strong> (League of Entropy) for verifiable random number
-        generation. Drand is a decentralized randomness beacon and does not receive any user data
-        from our application.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Children&apos;s Privacy</h2>
-      <p>
-        Our Service does not address anyone under the age of 13. We do not knowingly collect
-        personal information from children under 13.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Changes to This Policy</h2>
-      <p>
-        We may update this Privacy Policy from time to time. We will notify you of any changes by
-        posting the new Privacy Policy on this page and updating the &quot;Last updated&quot; date.
-      </p>
-
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 32, marginBottom: 8 }}>Contact Us</h2>
-      <p>
-        If you have any questions about this Privacy Policy, please contact us at{" "}
-        <a href="mailto:support@burnt.com" style={{ color: "#7b2d3f" }}>support@burnt.com</a>.
-      </p>
-    </main>
-  );
+export default async function PrivacyPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ returnTo?: string | string[] }>;
+}) {
+  const { returnTo: suppliedReturnTo } = await searchParams;
+  const returnTo = sanitizeReturnTo(typeof suppliedReturnTo === "string" ? suppliedReturnTo : null);
+  return <main style={{ maxWidth: 720, margin: "0 auto", padding: "48px 24px", color: "var(--color-text-primary)", fontFamily: "system-ui, sans-serif", lineHeight: 1.7 }}>
+    <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Privacy Notice</h1>
+    <nav aria-label="Legal navigation" className="mb-6 flex flex-wrap gap-1 text-sm">
+      <Link className={legalLink} href={returnTo}>Return to Gammon</Link>
+      <Link className={legalLink} href="/support">Support</Link>
+      <Link className={legalLink} href="/responsible-play">Responsible Play</Link>
+      <Link className={legalLink} href={withReturnTo("/terms", typeof suppliedReturnTo === "string" ? suppliedReturnTo : null)}>Terms of Service</Link>
+    </nav>
+    <p style={{ color: "var(--color-text-secondary)", marginBottom: 32 }}>Effective: March 17, 2026</p>
+    <p>This notice describes information processed when you use Gammon&apos;s website or app.</p>
+    <h2 style={section}>Information used for free play</h2><p>We process your public XION wallet address, authenticated session data, username, game states, moves, match results, connection metadata, and abuse-prevention signals needed to operate the service. Blockchain addresses and transactions are public by design.</p>
+    <h2 style={section}>Information used only for enabled money features</h2><p>If verUSD money features are enabled and you choose to enroll, we collect the identity and contact details required by the regulated payment provider: name, date of birth, contact details, address, and identity-document details. Bank credentials are entered in the provider&apos;s Plaid flow; Gammon does not ask you to enter bank credentials directly.</p><p>We also record the consent versions and timestamps, eligibility outcomes, payment-operation status, payment-method labels, escrow and settlement references, and the minimum transaction metadata needed to reconcile a cash game. Payment payloads and provider responses are encrypted at rest by the money service.</p>
+    <h2 style={section}>Recipients</h2><p>When money features are enabled, this data is processed with the configured payment provider and Plaid to verify identity, link a bank account, and execute or reconcile a requested transfer. We also use the XION network and the cash-game escrow contract for on-chain reserves and settlement. We disclose data when required by law or to prevent fraud, abuse, or security incidents.</p>
+    <h2 style={section}>Cookies and sessions</h2><p>We use an HTTP-only session cookie to authenticate protected actions and a CSRF token to protect state-changing requests. These are security controls, not advertising cookies.</p>
+    <h2 style={section}>Retention and choices</h2><p>We retain records for as long as necessary to run the service, resolve disputes, meet provider and legal obligations, and preserve required game and settlement evidence. You may request responsible-play restrictions through <Link href="/responsible-play">Responsible Play</Link>. To ask about your data, contact support with the wallet address associated with your request.</p>
+    <h2 style={section}>Security and contact</h2><p>No system is risk-free. Use a unique wallet session and do not share credentials. For privacy requests, contact <a href="mailto:support@burnt.com" style={{ color: "var(--color-gold-primary)", textDecoration: "underline" }}>support@burnt.com</a>.</p>
+  </main>;
 }

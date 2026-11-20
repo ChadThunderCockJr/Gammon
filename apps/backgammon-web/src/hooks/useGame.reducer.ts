@@ -9,6 +9,8 @@ import { initialGameContext } from "./useGame.types";
 
 export function gameReducer(state: GameContext, action: GameAction): GameContext {
   switch (action.type) {
+    case "SET_REVISION":
+      return { ...state, revision: action.revision };
     case "GAME_CREATED":
       return {
         ...state,
@@ -45,8 +47,10 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         undoCount: 0,
         turnStartedAt: action.gameState.dice ? Date.now() : null,
         lastOpponentMove: null,
-        doubleOffered: false,
-        doubleOfferedBy: null,
+        doubleOffered: action.pendingDouble !== null && action.pendingDouble !== undefined,
+        doubleOfferedBy: action.pendingDouble?.player ?? null,
+        doubleOfferDeadlineAt: action.pendingDouble?.deadlineAt ?? null,
+        reviewReason: null,
         turnHistory: [],
         currentTurnPlayer: null,
         currentTurnDice: null,
@@ -69,6 +73,9 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         legalMoves: action.legalMoves,
         turnStartedAt: state.turnStartedAt ?? (hasDice ? Date.now() : null),
         pendingConfirmation: action.needsConfirmation ?? state.pendingConfirmation,
+        doubleOffered: action.pendingDouble !== null && action.pendingDouble !== undefined,
+        doubleOfferedBy: action.pendingDouble?.player ?? null,
+        doubleOfferDeadlineAt: action.pendingDouble?.deadlineAt ?? null,
       };
     }
     case "DICE_ROLLED": {
@@ -83,6 +90,7 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         pendingConfirmation: action.needsConfirmation ? true : false,
         doubleOffered: false,
         doubleOfferedBy: null,
+        doubleOfferDeadlineAt: null,
         currentTurnPlayer: action.player,
         currentTurnDice: action.gameState.dice,
         currentTurnMoves: [],
@@ -130,6 +138,7 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         pendingConfirmation: false,
         doubleOffered: false,
         doubleOfferedBy: null,
+        doubleOfferDeadlineAt: null,
         turnHistory: turnRecord ? [...state.turnHistory, turnRecord] : state.turnHistory,
         currentTurnPlayer: null,
         currentTurnDice: null,
@@ -159,6 +168,7 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         turnStartedAt: null,
         doubleOffered: false,
         doubleOfferedBy: null,
+        doubleOfferDeadlineAt: null,
         turnHistory: finalTurnHistory,
         currentTurnPlayer: null,
         currentTurnDice: null,
@@ -189,6 +199,8 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         pendingConfirmation: false,
         doubleOffered: false,
         doubleOfferedBy: null,
+        doubleOfferDeadlineAt: null,
+        reviewReason: null,
         turnHistory: [],
         currentTurnPlayer: null,
         currentTurnDice: null,
@@ -198,7 +210,7 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
       };
     }
     case "DOUBLE_OFFERED":
-      return { ...state, doubleOffered: true, doubleOfferedBy: action.player };
+      return { ...state, doubleOffered: true, doubleOfferedBy: action.player, doubleOfferDeadlineAt: action.deadlineAt };
     case "DOUBLE_ACCEPTED":
       return {
         ...state,
@@ -207,6 +219,7 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
           : state.gameState,
         doubleOffered: false,
         doubleOfferedBy: null,
+        doubleOfferDeadlineAt: null,
       };
     case "DOUBLE_REJECTED":
       return {
@@ -220,48 +233,17 @@ export function gameReducer(state: GameContext, action: GameAction): GameContext
         legalMoves: [],
         doubleOffered: false,
         doubleOfferedBy: null,
-        doubleDepositRequired: false,
+        doubleOfferDeadlineAt: null,
       };
-    case "DOUBLE_AWAITING_DEPOSITS":
+    case "GAME_REVIEW":
       return {
         ...state,
+        status: "review",
+        legalMoves: [],
         doubleOffered: false,
         doubleOfferedBy: null,
-        doubleDepositRequired: true,
-        doubleDepositAmount: action.additionalDeposit,
-        doubleDepositNewCubeValue: action.newCubeValue,
-        doubleDepositDoubler: action.doubler,
-        doubleDepositResponder: action.responder,
-        doubleDepositDoublerDone: false,
-        doubleDepositResponderDone: false,
-        doubleDepositComplete: false,
-      };
-    case "DOUBLE_DEPOSIT_RECEIVED":
-      return {
-        ...state,
-        doubleDepositDoublerDone: action.player === state.doubleDepositDoubler ? true : state.doubleDepositDoublerDone,
-        doubleDepositResponderDone: action.player === state.doubleDepositResponder ? true : state.doubleDepositResponderDone,
-      };
-    case "DOUBLE_DEPOSITS_COMPLETE":
-      return {
-        ...state,
-        doubleDepositRequired: false,
-        doubleDepositComplete: true,
-        doubleDepositDoublerDone: true,
-        doubleDepositResponderDone: true,
-        gameState: state.gameState
-          ? { ...state.gameState, cubeValue: action.newCubeValue, cubeOwner: action.cubeOwner }
-          : state.gameState,
-      };
-    case "DOUBLE_DEPOSIT_TIMEOUT":
-      return {
-        ...state,
-        doubleDepositRequired: false,
-        doubleDepositComplete: false,
-        doubleDepositDoubler: null,
-        doubleDepositResponder: null,
-        doubleDepositDoublerDone: false,
-        doubleDepositResponderDone: false,
+        doubleOfferDeadlineAt: null,
+        reviewReason: action.reason,
       };
     case "OPPONENT_DISCONNECTED":
       return { ...state, opponentDisconnected: true };

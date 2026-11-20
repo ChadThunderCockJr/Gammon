@@ -21,7 +21,7 @@ export function AppShell({ children, sidebar = true }: AppShellProps) {
 }
 
 function ChallengeOverlay() {
-  const { pendingChallenges, acceptChallenge, declineChallenge } = useSocialContext();
+  const { pendingChallenges, acceptChallenge, declineChallenge, error } = useSocialContext();
 
   if (pendingChallenges.length === 0) return null;
 
@@ -31,6 +31,11 @@ function ChallengeOverlay() {
       role="alert"
       aria-label="Incoming game challenges"
     >
+      {error && (
+        <div role="alert" className="rounded-lg border border-[var(--color-danger)] bg-[var(--color-bg-surface)] p-3 text-sm text-[var(--color-danger)]">
+          {error}
+        </div>
+      )}
       {pendingChallenges.map((c) => (
         <div
           key={c.challengeId}
@@ -66,6 +71,9 @@ function ChallengeOverlay() {
             }}
           >
             {c.fromName || c.fromAddress.slice(0, 12) + "..."} wants to play
+            <span style={{ display: "block", marginTop: 6, fontSize: "0.75rem", fontWeight: 500, color: "var(--color-text-secondary)" }}>
+              Free · {c.config.matchLength} point{c.config.matchLength === 1 ? "" : "s"} · {c.config.timeControl}s turns · {c.config.doublingCube ? "doubling enabled" : "no doubling"}
+            </span>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button

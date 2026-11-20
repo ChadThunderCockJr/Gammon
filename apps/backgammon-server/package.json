@@ -6,8 +6,12 @@
   "main": "./dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "migrate": "node dist/migrate.js",
+    "migrate:dev": "tsx src/migrate.ts",
     "start": "node dist/index.js",
+    "funds:preflight": "node dist/funds-preflight.js",
+    "sandbox:browser-finance": "tsx scripts/browser-finance-sandbox.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -15,17 +19,19 @@
     "@cosmjs/amino": "^0.38.1",
     "@cosmjs/cosmwasm-stargate": "^0.38.1",
     "@cosmjs/crypto": "^0.38.1",
-    "@cosmjs/proto-signing": "^0.38.1",
     "@cosmjs/stargate": "^0.38.1",
+    "@cosmjs/tendermint-rpc": "^0.38.1",
     "@xion-beginner/backgammon-core": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "drand-client": "^1.4.2",
     "express": "^4.21.0",
     "ioredis": "^5.4.0",
+    "cosmjs-types": "^0.10.1",
     "pg": "^8.20.0",
     "uuid": "^11.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/cors": "^2.8.0",
@@ -34,7 +40,8 @@
     "@types/pg": "^8.20.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
-    "tsx": "^4.19.0",
+    "esbuild": "0.27.3",
+    "tsx": "4.21.0",
     "typescript": "^5",
     "vitest": "^3.2.4"
   }

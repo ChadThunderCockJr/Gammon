@@ -8,14 +8,10 @@ import { Header } from "@/components/layout";
 import {
   Card,
   Avatar,
-  Badge,
-  Button,
   SegmentToggle,
-  PillGroup,
   SectionLabel,
 } from "@/components/ui";
 import { useAuth } from "@/hooks/useAuth";
-import { useSocialContext } from "@/contexts/SocialContext";
 import { fetchLeaderboard, fetchFriendsLeaderboard, fetchRank, fetchStats } from "@/lib/api";
 import type { LeaderboardEntry, PlayerStats } from "@/lib/api";
 
@@ -26,18 +22,6 @@ const SCOPE_SEGMENTS = [
   { id: "friends", label: "Friends" },
 ];
 
-const PERIOD_PILLS = [
-  { id: "allTime", label: "All Time" },
-  { id: "monthly", label: "This Month" },
-  { id: "weekly", label: "This Week" },
-];
-
-const SORT_OPTIONS = [
-  { id: "rating", label: "Rating" },
-  { id: "pr", label: "Best PR" },
-  { id: "winRate", label: "Win %" },
-  { id: "earnings", label: "Earnings" },
-];
 
 /* ── Podium Spot ── */
 function PodiumSpot({ rank, entry, height }: {
@@ -62,7 +46,7 @@ function PodiumSpot({ rank, entry, height }: {
         {entry.rating.toLocaleString()}
       </div>
       <div className="text-[10px] text-text-muted font-mono mt-px">
-        PR {"--"} &middot; {entry.totalGames} games
+        {entry.totalGames} games
       </div>
       <div
         className={cn(
@@ -139,10 +123,6 @@ function LeaderboardRow({ entry, isYou }: { entry: LeaderboardEntry; isYou: bool
         {entry.rating.toLocaleString()}
       </span>
 
-      {/* PR */}
-      <span className="text-xs font-semibold font-mono text-text-secondary min-w-[32px] text-right tabular-nums">
-        {"--"}
-      </span>
 
       {/* Win Rate */}
       <span className="text-xs font-semibold font-mono text-text-secondary min-w-[40px] text-right tabular-nums">
@@ -165,8 +145,6 @@ export default function LeaderboardPage() {
   const router = useRouter();
   const { address } = useAuth();
   const [scope, setScope] = useState("global");
-  const [period, setPeriod] = useState("allTime");
-  const [sortBy, setSortBy] = useState("rating");
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(-1);
@@ -177,18 +155,43 @@ export default function LeaderboardPage() {
   const [myRank, setMyRank] = useState<number | null>(null);
   const [myStats, setMyStats] = useState<PlayerStats | null>(null);
   const [totalPlayers, setTotalPlayers] = useState(0);
+  const [globalStatus, setGlobalStatus] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [friendsStatus, setFriendsStatus] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [refreshVersion, setRefreshVersion] = useState(0);
 
   useEffect(() => {
-    fetchLeaderboard(50).then(data => {
+    setGlobalStatus("loading");
+    void fetchLeaderboard(50).then((data) => {
       setGlobalEntries(data.entries);
       setTotalPlayers(data.total);
-    }).catch(() => {});
+      setGlobalStatus("ready");
+    }).catch(() => {
+      setGlobalEntries([]);
+      setGlobalStatus("unavailable");
+    });
     if (address) {
-      fetchFriendsLeaderboard(address).then(data => setFriendEntries(data.entries)).catch(() => {});
-      fetchRank(address).then(r => setMyRank(r)).catch(() => {});
-      fetchStats(address).then(setMyStats).catch(() => {});
+      setFriendsStatus("loading");
+      void fetchFriendsLeaderboard(address).then((data) => {
+        setFriendEntries(data.entries);
+        setFriendsStatus("ready");
+      }).catch(() => {
+        setFriendEntries([]);
+        setFriendsStatus("unavailable");
+      });
+      void Promise.all([fetchRank(address), fetchStats(address)]).then(([rank, stats]) => {
+        setMyRank(rank);
+        setMyStats(stats);
+      }).catch(() => {
+        setMyRank(null);
+        setMyStats(null);
+      });
+    } else {
+      setFriendEntries([]);
+      setFriendsStatus("ready");
+      setMyRank(null);
+      setMyStats(null);
     }
-  }, [address]);
+  }, [address, refreshVersion]);
 
   // Cmd/Ctrl+K shortcut to focus search
   useEffect(() => {
@@ -246,6 +249,7 @@ export default function LeaderboardPage() {
   };
 
   const players = scope === "global" ? globalEntries : friendEntries;
+  const currentStatus = scope === "global" ? globalStatus : friendsStatus;
   const top3 = players.slice(0, 3);
   const rest = players.slice(3);
 
@@ -348,134 +352,66 @@ export default function LeaderboardPage() {
             )}
           </div>
 
-          {/* ═══ FILTERS ═══ */}
           <Card>
-            {/* Scope toggle */}
-            <div className="mb-4">
-              <SegmentToggle segments={SCOPE_SEGMENTS} activeId={scope} onSelect={setScope} />
-            </div>
+            <SegmentToggle ariaLabel="Leaderboard scope" segments={SCOPE_SEGMENTS} activeId={scope} onSelect={setScope} />
+            <p className="mt-3 text-xs text-text-muted">All-time ratings from completed online matches. Unavailable performance metrics are not inferred.</p>
+          </Card>
 
-            {/* Time period pills */}
-            <PillGroup pills={PERIOD_PILLS} activeId={period} onSelect={setPeriod} className="mb-4" />
-
-            {/* Sort by */}
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-text-muted uppercase tracking-[0.04em] font-body">
-                Sort by
-              </span>
-              <div className="flex gap-1">
-                {SORT_OPTIONS.map(({ id, label }) => (
-                  <button
-                    key={id}
-                    onClick={() => setSortBy(id)}
-                    className={cn(
-                      "px-2.5 py-1 rounded-[var(--radius-button)] text-[11px] font-semibold cursor-pointer transition-colors",
-                      sortBy === id
-                        ? "bg-gold-primary text-[var(--color-text-on-gold)] border border-gold-primary"
-                        : "bg-transparent text-text-muted border border-transparent hover:text-text-secondary",
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
+          {currentStatus === "loading" ? (
+            <Card><p role="status" className="py-8 text-center text-sm text-text-muted">Loading leaderboard…</p></Card>
+          ) : currentStatus === "unavailable" ? (
+            <Card>
+              <div role="alert" className="py-8 text-center text-sm text-text-muted">
+                <p>The leaderboard is temporarily unavailable. No empty ranking has been assumed.</p>
+                <button type="button" className="mt-3 min-h-11 underline" onClick={() => setRefreshVersion((value) => value + 1)}>Retry leaderboard</button>
               </div>
-            </div>
-          </Card>
+            </Card>
+          ) : players.length === 0 ? (
+            <Card><p className="py-8 text-center text-sm text-text-muted">{scope === "friends" ? "None of your friends has a ranked match yet." : "No ranked players yet."}</p></Card>
+          ) : (
+            <>
+              <Card padding="none" className="overflow-hidden">
+                <div className="px-5 pt-5">
+                  <SectionLabel>Top Players</SectionLabel>
+                </div>
+                <div className="mt-2 flex items-end gap-3 px-6">
+                  {top3[1] && <PodiumSpot rank={2} entry={top3[1]} height={64} />}
+                  {top3[0] && <PodiumSpot rank={1} entry={top3[0]} height={88} />}
+                  {top3[2] && <PodiumSpot rank={3} entry={top3[2]} height={48} />}
+                </div>
+              </Card>
 
-          {/* ═══ PODIUM (Top 3) ═══ */}
-          <Card padding="none" className="overflow-hidden">
-            <div className="px-5 pt-5">
-              <SectionLabel>Top Players</SectionLabel>
-            </div>
-            <div className="flex items-end gap-3 px-6 mt-2">
-              {/* 2nd place */}
-              {top3[1] && (
-                <PodiumSpot
-                  rank={2}
-                  entry={top3[1]}
-                  height={64}
-                />
-              )}
-              {/* 1st place */}
-              {top3[0] && (
-                <PodiumSpot
-                  rank={1}
-                  entry={top3[0]}
-                  height={88}
-                />
-              )}
-              {/* 3rd place */}
-              {top3[2] && (
-                <PodiumSpot
-                  rank={3}
-                  entry={top3[2]}
-                  height={48}
-                />
-              )}
-            </div>
-          </Card>
+              <Card padding="sm">
+                <div className="mb-1 flex items-center gap-2.5 border-b-[1.5px] border-border-subtle px-3.5 py-1.5">
+                  <span className="w-7 text-center text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">#</span>
+                  <span className="w-8" />
+                  <span className="flex-1 text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">Player</span>
+                  <span className="min-w-[50px] text-right text-[9px] font-bold text-text-primary uppercase tracking-[0.04em] font-mono">Rating</span>
+                  <span className="min-w-[40px] text-right text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">Win %</span>
+                  <span className="min-w-[40px] text-right text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">Games</span>
+                </div>
 
-          {/* ═══ RANKINGS TABLE ═══ */}
-          <Card padding="sm">
-            {/* Column headers */}
-            <div className="flex items-center gap-2.5 px-3.5 py-1.5 border-b-[1.5px] border-border-subtle mb-1">
-              <span className="w-7 text-center text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">
-                #
-              </span>
-              <span className="w-8" />
-              <span className="flex-1 text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono">
-                Player
-              </span>
-              <span className={cn(
-                "text-[9px] font-bold uppercase tracking-[0.04em] font-mono min-w-[50px] text-right",
-                sortBy === "rating" ? "text-text-primary" : "text-text-muted",
-              )}>
-                Rating
-              </span>
-              <span className={cn(
-                "text-[9px] font-bold uppercase tracking-[0.04em] font-mono min-w-[32px] text-right",
-                sortBy === "pr" ? "text-text-primary" : "text-text-muted",
-              )}>
-                PR
-              </span>
-              <span className={cn(
-                "text-[9px] font-bold uppercase tracking-[0.04em] font-mono min-w-[40px] text-right",
-                sortBy === "winRate" ? "text-text-primary" : "text-text-muted",
-              )}>
-                Win %
-              </span>
-              <span className="text-[9px] font-bold text-text-muted uppercase tracking-[0.04em] font-mono min-w-[40px] text-right">
-                Games
-              </span>
-            </div>
+                <div className="max-h-[440px] overflow-auto">
+                  {rest.map((player) => (
+                    <LeaderboardRow key={player.address} entry={player} isYou={!!address && player.address === address} />
+                  ))}
+                  {showYouRow && myEntry && (
+                    <>
+                      <div className="flex items-center gap-2.5 px-3.5 py-1.5">
+                        <span className="w-7 text-center text-sm text-text-muted tracking-widest font-mono">&middot;&middot;&middot;</span>
+                        <div className="h-px flex-1 bg-bg-subtle" />
+                      </div>
+                      <LeaderboardRow entry={myEntry} isYou={true} />
+                    </>
+                  )}
+                </div>
 
-            {/* Rows (4th place onward) */}
-            <div className="max-h-[440px] overflow-auto">
-              {rest.map((player) => (
-                <LeaderboardRow key={player.address} entry={player} isYou={!!address && player.address === address} />
-              ))}
-
-              {/* Separator gap to "You" row (global only) */}
-              {showYouRow && myEntry && (
-                <>
-                  <div className="flex items-center gap-2.5 px-3.5 py-1.5">
-                    <span className="w-7 text-center text-sm text-text-muted tracking-widest font-mono">
-                      &middot;&middot;&middot;
-                    </span>
-                    <div className="flex-1 h-px bg-bg-subtle" />
-                  </div>
-
-                  {/* Your rank */}
-                  <LeaderboardRow entry={myEntry} isYou={true} />
-                </>
-              )}
-            </div>
-
-            {/* Total players */}
-            <div className="mt-2 pt-2.5 border-t border-border-subtle text-[11px] text-text-muted text-center font-mono px-3.5">
-              {scope === "global" ? `${totalPlayers.toLocaleString()} active players` : `${friendEntries.length} friends ranked`}
-            </div>
-          </Card>
+                <div className="mt-2 border-t border-border-subtle px-3.5 pt-2.5 text-center text-[11px] text-text-muted font-mono">
+                  {scope === "global" ? `${totalPlayers.toLocaleString()} active players` : `${friendEntries.length} friends ranked`}
+                </div>
+              </Card>
+            </>
+          )}
 
           {/* ═══ YOUR RANK SUMMARY ═══ */}
           {myRank != null && myStats && (

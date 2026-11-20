@@ -12,16 +12,19 @@ interface PillGroupProps {
   activeId: string;
   onSelect: (id: string) => void;
   className?: string;
+  ariaLabel?: string;
 }
 
-export function PillGroup({ pills, activeId, onSelect, className }: PillGroupProps) {
+export function PillGroup({ pills, activeId, onSelect, className, ariaLabel = "Filters" }: PillGroupProps) {
   return (
-    <div className={cn("flex gap-1.5 flex-wrap", className)}>
+    <div role="group" aria-label={ariaLabel} className={cn("flex gap-1.5 flex-wrap", className)}>
       {pills.map((pill) => {
         const active = activeId === pill.id;
         return (
           <button
             key={pill.id}
+            type="button"
+            aria-pressed={active}
             onClick={() => onSelect(pill.id)}
             className="rounded-[var(--radius-button)] text-[12px] font-semibold transition-all duration-[120ms] cursor-pointer"
             style={{

@@ -3,16 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icons } from "./Sidebar";
+import { useIsNativeApp } from "@/hooks/useIsNativeApp";
 
 const tabs = [
-  { href: "/", label: "Home", icon: Icons.home },
-  { href: "/matchmaking", label: "Play", icon: Icons.play },
-  { href: "/social", label: "Social", icon: Icons.users },
-  { href: "/profile", label: "Profile", icon: Icons.settings },
+  { href: "/", label: "Home", icon: Icons.home, native: true },
+  { href: "/matchmaking", label: "Find opponent", icon: Icons.play, native: true },
+  { href: "/social", label: "Social", icon: Icons.users, native: true },
+  { href: "/wallet", label: "Balance", icon: Icons.wallet, native: false },
+  { href: "/profile", label: "More", icon: Icons.settings, native: true },
 ] as const;
 
 export function MobileNav() {
   const pathname = usePathname();
+  const isNativeApp = useIsNativeApp();
 
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -24,7 +27,7 @@ export function MobileNav() {
       className="fixed bottom-0 left-0 right-0 z-50 flex lg:hidden bg-bg-base border-t border-border-subtle"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      {tabs.map(({ href, label, icon }) => {
+      {tabs.filter((tab) => tab.native || !isNativeApp).map(({ href, label, icon }) => {
         const active = isActive(href);
         return (
           <Link

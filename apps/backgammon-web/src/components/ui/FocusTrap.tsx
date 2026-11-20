@@ -4,9 +4,10 @@ import { useEffect, useRef, type ReactNode } from "react";
 interface FocusTrapProps {
   children: ReactNode;
   active?: boolean;
+  onEscape?: () => void;
 }
 
-export function FocusTrap({ children, active = true }: FocusTrapProps) {
+export function FocusTrap({ children, active = true, onEscape }: FocusTrapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,12 +41,10 @@ export function FocusTrap({ children, active = true }: FocusTrapProps) {
       }
     };
 
-    // Handle Escape key
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        // Dispatch a custom event that the modal can listen to
-        container.dispatchEvent(new CustomEvent('focustrap-escape', { bubbles: true }));
-      }
+      if (e.key !== "Escape" || !onEscape) return;
+      e.preventDefault();
+      onEscape();
     };
 
     document.addEventListener('keydown', handleKeyDown);
@@ -56,7 +55,7 @@ export function FocusTrap({ children, active = true }: FocusTrapProps) {
       document.removeEventListener('keydown', handleEscape);
       previouslyFocused?.focus();
     };
-  }, [active]);
+  }, [active, onEscape]);
 
   return <div ref={containerRef}>{children}</div>;
 }
