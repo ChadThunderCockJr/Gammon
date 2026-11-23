@@ -29,7 +29,7 @@ import {
 } from "./session.js";
 import { isBlockedEitherDirection } from "./social-store.js";
 
-const router = express.Router();
+const router: express.Router = express.Router();
 const XION_ADDRESS = /^xion1[023456789acdefghjklmnpqrstuvwxyz]{38,64}$/;
 const CreateQuote = z.object({
   opponent: z.string().regex(XION_ADDRESS),

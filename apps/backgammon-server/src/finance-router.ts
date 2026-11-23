@@ -48,7 +48,7 @@ import {
 } from "./session.js";
 import { logger } from "./logger.js";
 
-const router = express.Router();
+const router: express.Router = express.Router();
 const XION_ADDRESS = /^xion1[023456789acdefghjklmnpqrstuvwxyz]{38,64}$/;
 const TX_HASH = /^[0-9A-Fa-f]{64}$/;
 const EMAIL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/;

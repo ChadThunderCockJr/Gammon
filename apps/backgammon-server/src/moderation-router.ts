@@ -8,7 +8,7 @@ import {
 } from "./social-store-pg.js";
 import { requireCsrf, requireSession, type AuthenticatedRequest } from "./session.js";
 
-export const moderationRouter = express.Router();
+export const moderationRouter: express.Router = express.Router();
 
 const ListReports = z.object({
   state: z.enum(["open", "investigating", "resolved", "closed"]).optional(),
