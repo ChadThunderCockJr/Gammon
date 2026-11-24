@@ -1,6 +1,6 @@
 {
-  "buildCommand": "pnpm --filter @xion-beginner/backgammon-web build",
-  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "npx --yes pnpm@10.28.2 --filter @xion-beginner/backgammon-web build",
+  "installCommand": "npx --yes pnpm@10.28.2 install --frozen-lockfile",
   "framework": "nextjs",
   "outputDirectory": "apps/backgammon-web/.next"
 }
