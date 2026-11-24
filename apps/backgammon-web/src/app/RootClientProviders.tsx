@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { AbstraxionProvider } from "@burnt-labs/abstraxion";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import {
@@ -19,7 +19,6 @@ import {
   ABSTRAXION_STALE_KEYS,
 } from "@/lib/constants";
 import { routeName } from "@/lib/route-metadata";
-import { withReturnTo } from "@/lib/return-to";
 
 const TREASURY_ADDRESS = process.env.NEXT_PUBLIC_TREASURY_ADDRESS || "";
 const DEFAULT_TREASURY = "xion1dlm2vellmpau54yd7vywvesvvhu6wnx4vtfzkk8jkzd6yrfvc0hq6l8lu7";
@@ -27,17 +26,11 @@ const DEFAULT_TREASURY = "xion1dlm2vellmpau54yd7vywvesvvhu6wnx4vtfzkk8jkzd6yrfvc
 
 export function RootClientProviders({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const currentRouteName = routeName(pathname);
   const [routeAnnouncement, setRouteAnnouncement] = useState("");
-  const abstraxionCallbackUrl = useMemo(() => {
-    if (typeof window === "undefined") return undefined;
-
-    const callbackPath = pathname === "/login"
-      ? withReturnTo("/login", searchParams.get("returnTo"))
-      : "/login";
-    return `${window.location.origin}${callbackPath}`;
-  }, [pathname, searchParams]);
+  const abstraxionCallbackUrl = typeof window === "undefined"
+    ? undefined
+    : `${window.location.origin}/login`;
   const abstraxionConfig = useMemo(() => ({
     chainId: CHAIN_ID,
     treasury: TREASURY_ADDRESS || DEFAULT_TREASURY,

@@ -244,6 +244,8 @@ function BoardIllustration() {
    MAIN — Login Page
    ══════════════════════════════════════════════════════════════════ */
 
+const WALLET_RETURN_TO = "gammon-wallet-return-to";
+
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -252,9 +254,15 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isConnected) {
-      router.replace(returnTo);
+      let destination = returnTo;
+      try {
+        const saved = sessionStorage.getItem(WALLET_RETURN_TO);
+        sessionStorage.removeItem(WALLET_RETURN_TO);
+        if (!searchParams.has("returnTo") && saved !== null) destination = sanitizeReturnTo(saved);
+      } catch { /* Storage can be unavailable; use the current URL. */ }
+      router.replace(destination);
     }
-  }, [isConnected, returnTo, router]);
+  }, [isConnected, returnTo, router, searchParams]);
 
   return (
     <main
@@ -426,7 +434,10 @@ export default function LoginPage() {
               marginTop: 8,
             }}
           >
-            <GammonButton onClick={() => login()} disabled={isConnecting}>
+            <GammonButton onClick={() => {
+              try { sessionStorage.setItem(WALLET_RETURN_TO, returnTo); } catch { /* Login still works. */ }
+              void login();
+            }} disabled={isConnecting}>
               {isConnecting ? (
                 <>
                   <div
